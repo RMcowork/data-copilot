@@ -49,7 +49,9 @@ Written while everything works. Each entry is a sequence: click here, run this, 
 ## A dataset someone added is wrong, stuck or in the way
 
 - **Wrong data**: delete its tab (the ✕) and add the file again. Datasets added in the UI are only in Postgres, so keep the original files elsewhere; a restore of the database brings them back.
+- **Wrong tab name** (a Drive file ID, say): click the ✎ on the tab. A built-in tab's new name is kept in `dataset_renames`; to go back to the `dataset.yaml` title, delete that row.
+- **A chat needs to go to someone**: Export on the chat (Markdown, web page, copy, share). The files are generated on request and not stored.
 - **No free slot** (3 of 3 added): delete one tab. Built-in datasets (the `data/` folders) do not count and cannot be deleted in the UI.
 - **A `data/` file changed but the tab did not**: the tab reloads on the next deploy or restart, when the file's content differs from what was loaded. Check the seed report line.
 - **The database is filling up** (Railway's volume alert at 80%): `SELECT name, row_count FROM dataset_tables ORDER BY row_count DESC` shows which tables are big. Delete an added dataset you no longer need, or enlarge the Postgres volume.
-- **A link is refused**: only public http(s) links to a CSV or Excel file are accepted; a link that returns a web page (a sign-in, a sheet not shared as "anyone with the link") is refused. Upload the file instead.
+- **A link is refused**: only public http(s) links to a CSV or Excel file are accepted; a link that returns a web page (a sign-in, a sheet not shared as "anyone with the link") is refused. Upload the file instead. For Google Sheets, the Share link (set to "anyone with the link") and the File > Share > Publish to web link both work, and so does an Excel file stored in Drive (the link has `rtpof=true`; all its sheets are imported); a 400 from Google means the link was not a Sheets link Google recognises.

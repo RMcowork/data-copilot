@@ -100,6 +100,7 @@ Optional in the code (`app/config.py` has the same defaults), but set them anywa
 | `MAX_DATASET_MB` | `25` | largest file a user can upload or link as a dataset |
 | `MAX_DATASET_ROWS` | `200000` | most rows in one table of an uploaded or linked file |
 | `MAX_UPLOADED_DATASETS` | `3` | datasets users can add in the UI (the `data/` folders do not count) |
+| `MAX_FILES_PER_DATASET` | `3` | files (or links) in one added dataset, i.e. in one tab |
 | `TIMEZONE` | `Asia/Jerusalem` | the local day for the cap, and which day the digest calls "yesterday" |
 | `PYTHONUNBUFFERED` | `1` | so `print` reaches Railway's logs at once; the digest's six lines depend on it |
 | `MAX_TOKENS` | not set (2048) | model output cap |
@@ -163,7 +164,7 @@ railway add --database postgres
 
 ### Step 2: let Railway's GitHub app see the repo
 
-Open https://github.com/apps/railway-app/installations/new (the same page as Railway → Account Settings → Integrations → GitHub → Configure). Pick the account that owns the repo, choose **Only select repositories** → `bakery-copilot`, save.
+Open https://github.com/apps/railway-app/installations/new (the same page as Railway → Account Settings → Integrations → GitHub → Configure). Pick the account that owns the repo, choose **Only select repositories** → `data-copilot`, save.
 
 Do this before step 3. A service created while the app has no access keeps the repo as its source but gets no push trigger, and installing the app later does not add one: builds from GitHub fail with `Repository "RMcowork/data-copilot" not found or is not accessible`, and a push to `main` deploys nothing, silently. If the services already exist, reconnect each one once the app has access; the command creates the trigger and starts a build of `main` at once:
 
@@ -188,7 +189,7 @@ Each starts a build at once. That first deploy fails or boots in local mode (no 
 On `web`, the plain values first. These lines work as they are in zsh, bash and PowerShell. The single quotes matter in all three: without them the shell tries to expand `${{...}}`, and the command fails or the reference arrives broken.
 
 ```bash
-railway variable set --service web --skip-deploys APP_ENV=production MODEL=claude-opus-5-5 MODEL_EFFORT=medium
+railway variable set --service web --skip-deploys APP_ENV=production MODEL=claude-sonnet-5-5 MODEL_EFFORT=medium
 railway variable set --service web --skip-deploys HISTORY_LIMIT=20 RATE_LIMIT_PER_HOUR=30 DAILY_CAP_USD=3.00
 railway variable set --service web --skip-deploys MAX_UPLOAD_MB=5 TIMEZONE=Asia/Jerusalem PYTHONUNBUFFERED=1
 railway variable set --service web --skip-deploys 'DATABASE_URL=${{Postgres.DATABASE_URL}}'

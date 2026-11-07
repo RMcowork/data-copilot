@@ -18,6 +18,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from . import auth, limits
+from . import export as export_lib
 from . import datasets as ds_lib
 from .agent import get_model_client, run_turn
 from .config import ROOT, settings
@@ -57,6 +58,10 @@ class ImageIn(BaseModel):
 class LinkIn(BaseModel):
     url: str = Field(min_length=8, max_length=2000)
     name: str = Field(default="", max_length=80)
+
+
+class RenameIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
 
 
 class ChatIn(BaseModel):
@@ -150,6 +155,24 @@ def list_messages(conversation_id: int, request: Request, db: Session = Depends(
              "created_at": m.created_at.isoformat(timespec="seconds")} for m in rows]
 
 
+@app.get("/api/conversations/{conversation_id}/export")
+def export_conversation(conversation_id: int, request: Request, format: str = "md", db: Session = Depends(get_db)):
+    """Download a chat as Markdown (`md`) or as a self-contained web page (`html`, prints well to PDF)."""
+    user = auth.current_user(request, db)
+    conv = db.get(Conversation, conversation_id)
+    if conv is None or conv.user_id != user.id:
+        raise HTTPException(404, "Conversation not found.")
+    if format not in export_lib.FORMATS:
+        raise HTTPException(400, "Format must be md or html.")
+    messages = db.scalars(select(Message).where(Message.conversation_id == conv.id).order_by(Message.id)).all()
+    ds = ds_lib.dataset_for_conversation(db, conv)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    body = export_lib.render(format, conv.title, ds.name if ds else "", user.name, list(messages), now)
+    headers = {"Content-Disposition": export_lib.content_disposition(conv.title, format, now),
+               "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+    return Response(content=body, media_type=export_lib.FORMATS[format], headers=headers)
+
+
 @app.post("/api/chat")
 def chat(payload: ChatIn, request: Request, db: Session = Depends(get_db)):
     """One turn. Checks the three limits, then streams the agent's events as SSE."""
@@ -197,7 +220,7 @@ def chat(payload: ChatIn, request: Request, db: Session = Depends(get_db)):
 def _dataset_list(db: Session) -> dict:
     items = [ds_lib.dataset_summary(d) for d in ds_lib.list_datasets(db)]
     return {"datasets": items, "default_id": (ds_lib.default_dataset(db).id if items else None),
-            "added": ds_lib.uploaded_count(db), "max_added": settings.max_uploaded_datasets,
+            "added": ds_lib.uploaded_count(db), "max_added": settings.max_uploaded_datasets, "max_files": settings.max_files_per_dataset,
             "max_mb": settings.max_dataset_mb, "max_rows": settings.max_dataset_rows}
 
 
@@ -207,10 +230,7 @@ def list_datasets(request: Request, db: Session = Depends(get_db)):
     return _dataset_list(db)
 
 
-@app.post("/api/datasets/upload", status_code=201)
-async def upload_dataset(request: Request, filename: str, name: str = "", db: Session = Depends(get_db)):
-    """The file is the raw request body (no multipart); `filename` says what kind it is."""
-    user = auth.current_user(request, db)
+async def _read_body(request: Request) -> bytes:
     limit = settings.max_dataset_mb * 1024 * 1024
     if int(request.headers.get("content-length") or 0) > limit:
         raise HTTPException(413, f"The file is larger than {settings.max_dataset_mb} MB.")
@@ -219,8 +239,23 @@ async def upload_dataset(request: Request, filename: str, name: str = "", db: Se
         buf += chunk
         if len(buf) > limit:
             raise HTTPException(413, f"The file is larger than {settings.max_dataset_mb} MB.")
+    return bytes(buf)
+
+
+def _dataset_or_404(db: Session, dataset_id: int) -> Dataset:
+    ds = db.get(Dataset, dataset_id)
+    if ds is None:
+        raise HTTPException(404, "Dataset not found.")
+    return ds
+
+
+@app.post("/api/datasets/upload", status_code=201)
+async def upload_dataset(request: Request, filename: str, name: str = "", db: Session = Depends(get_db)):
+    """The file is the raw request body (no multipart); `filename` says what kind it is."""
+    user = auth.current_user(request, db)
+    data = await _read_body(request)
     try:
-        ds = await run_in_threadpool(ds_lib.add_dataset, db, name=name, filename=filename, data=bytes(buf),
+        ds = await run_in_threadpool(ds_lib.add_dataset, db, name=name, filename=filename, data=data,
                                      source="upload", origin=filename, user_id=user.id)
     except ds_lib.DatasetError as exc:
         raise HTTPException(400, str(exc)) from None
@@ -236,6 +271,43 @@ def add_dataset_from_link(payload: LinkIn, request: Request, db: Session = Depen
         filename, data = fetch_url(payload.url)
         ds = ds_lib.add_dataset(db, name=payload.name, filename=filename, data=data, source="link",
                                 origin=payload.url.strip(), user_id=user.id)
+    except ds_lib.DatasetError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return ds_lib.dataset_summary(ds)
+
+
+@app.post("/api/datasets/{dataset_id}/upload", status_code=201)
+async def add_file_to_dataset(dataset_id: int, request: Request, filename: str, db: Session = Depends(get_db)):
+    """One more file for an added dataset's tab (up to MAX_FILES_PER_DATASET in all)."""
+    auth.current_user(request, db)
+    ds = _dataset_or_404(db, dataset_id)
+    data = await _read_body(request)
+    try:
+        await run_in_threadpool(ds_lib.add_file, db, ds, filename=filename, data=data)
+    except ds_lib.DatasetError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return ds_lib.dataset_summary(ds)
+
+
+@app.post("/api/datasets/{dataset_id}/link", status_code=201)
+def add_link_to_dataset(dataset_id: int, payload: LinkIn, request: Request, db: Session = Depends(get_db)):
+    auth.current_user(request, db)
+    ds = _dataset_or_404(db, dataset_id)
+    try:
+        ds_lib.check_can_add_file(ds)  # fail before downloading anything
+        filename, data = fetch_url(payload.url)
+        ds_lib.add_file(db, ds, filename=filename, data=data)
+    except ds_lib.DatasetError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return ds_lib.dataset_summary(ds)
+
+
+@app.patch("/api/datasets/{dataset_id}")
+def rename_dataset(dataset_id: int, payload: RenameIn, request: Request, db: Session = Depends(get_db)):
+    auth.current_user(request, db)
+    ds = _dataset_or_404(db, dataset_id)
+    try:
+        ds_lib.rename_dataset(db, ds, payload.name)
     except ds_lib.DatasetError as exc:
         raise HTTPException(400, str(exc)) from None
     return ds_lib.dataset_summary(ds)

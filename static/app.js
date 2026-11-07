@@ -39,7 +39,7 @@
       await loadDatasets();
     } catch (err) { $("login-error").textContent = err.message; }
   });
-  $("logout").addEventListener("click", async () => { await api("/api/logout", { method: "POST" }).catch(() => {}); state.user = null; state.current = null; state.datasetId = null; showLogin(); });
+  $("logout").addEventListener("click", async () => { await api("/api/logout", { method: "POST" }).catch(() => {}); state.user = null; state.current = null; state.datasetId = null; updateActions(); showLogin(); });
 
   // ---------- conversations ----------
   async function loadConversations() {
@@ -60,6 +60,7 @@
   }
   async function openConversation(id) {
     state.current = id;
+    updateActions();
     const conv = state.conversations.find((c) => c.id === id);
     $("conv-title").textContent = conv ? conv.title : "Chat";
     renderConversations();
@@ -84,7 +85,7 @@
     $("messages").innerHTML = `<div class="empty"><p>${lead}</p>${hints}</div>`;
     $("messages").querySelectorAll(".hint").forEach((h) => h.addEventListener("click", () => { $("input").value = h.dataset.q; $("input").focus(); }));
   }
-  $("new-chat").addEventListener("click", () => { state.current = null; $("conv-title").textContent = "New chat"; renderConversations(); renderEmpty(); $("input").focus(); });
+  $("new-chat").addEventListener("click", () => { state.current = null; updateActions(); $("conv-title").textContent = "New chat"; renderConversations(); renderEmpty(); $("input").focus(); });
 
   // ---------- messages ----------
   function addBubble(role, text, { hasImage = false, imageDataUrl = null, time = null } = {}) {
@@ -152,7 +153,7 @@
           const raw = buffer.slice(0, idx); buffer = buffer.slice(idx + 2);
           const line = raw.split("\n").find((l) => l.startsWith("data: ")); if (!line) continue;
           const ev = JSON.parse(line.slice(6));
-          if (ev.type === "meta") { state.current = ev.conversation_id; if (ev.title) $("conv-title").textContent = ev.title; }
+          if (ev.type === "meta") { state.current = ev.conversation_id; updateActions(); if (ev.title) $("conv-title").textContent = ev.title; }
           else if (ev.type === "text") { full += ev.text; body.innerHTML = render(full); scrollDown(); }
           else if (ev.type === "tool") { const c = document.createElement("span"); c.className = `chip tool ${ev.status}`; c.textContent = `${ev.status === "start" ? "⚙" : "✓"} ${ev.name}${ev.summary ? ": " + ev.summary : ""}`; meta.appendChild(c); setStatus(`using ${ev.name}…`); }
           else if (ev.type === "done") { const u = ev.usage || {}; const c = document.createElement("span"); c.className = "chip"; c.textContent = `${u.input_tokens || 0} in · ${u.output_tokens || 0} out · $${(ev.cost_usd || 0).toFixed(4)}`; meta.appendChild(c); }
@@ -164,7 +165,7 @@
     } finally {
       body.classList.remove("cursor"); state.streaming = false; $("send").disabled = false; setStatus("");
       await loadConversationsQuiet();
-      renderTabs();
+      renderTabs(); updateActions();
     }
   });
   async function loadConversationsQuiet() { try { state.conversations = await api(conversationsUrl()); renderConversations(); } catch (_) {} }
@@ -173,7 +174,7 @@
   async function loadDatasets() {
     const res = await api("/api/datasets");
     state.datasets = res.datasets;
-    state.meta = { added: res.added, max_added: res.max_added, max_mb: res.max_mb, max_rows: res.max_rows };
+    state.meta = { added: res.added, max_added: res.max_added, max_mb: res.max_mb, max_rows: res.max_rows, max_files: res.max_files || 3 };
     if (!state.datasets.some((d) => d.id === state.datasetId)) state.datasetId = res.default_id;
     renderTabs();
     updateFeatureUi();
@@ -186,6 +187,11 @@
       b.className = "tab" + (d.id === state.datasetId ? " active" : "");
       b.title = d.description || d.name;
       b.append(d.name);
+      const pen = document.createElement("span");
+      pen.className = "edit"; pen.textContent = "✎"; pen.title = "Rename this tab";
+      pen.addEventListener("click", (e) => { e.stopPropagation(); openRenameDialog(d); });
+      b.appendChild(pen);
+      b.addEventListener("dblclick", () => openRenameDialog(d));
       if (d.deletable) {
         const x = document.createElement("span");
         x.className = "x"; x.textContent = "✕"; x.title = "Delete this dataset";
@@ -201,8 +207,8 @@
     add.textContent = "+ Add dataset";
     const count = document.createElement("small"); count.textContent = `${state.meta.added}/${state.meta.max_added}`; add.appendChild(count);
     add.disabled = full || state.streaming;
-    add.title = full ? `You already have ${state.meta.max_added} added datasets. Delete one to add another.` : "Upload a file or paste a link";
-    add.addEventListener("click", openAddDialog);
+    add.title = full ? `You already have ${state.meta.max_added} added datasets. Delete one to add another.` : "Upload up to 3 files or paste links";
+    add.addEventListener("click", () => openAddDialog(null));
     nav.appendChild(add);
   }
   function updateFeatureUi() {
@@ -211,6 +217,16 @@
     $("toggle-invoices").classList.toggle("hidden", !hasInvoices());
     if (!hasInvoices()) { $("invoices").classList.add("hidden"); state.image = null; $("image").value = ""; $("attachment").classList.add("hidden"); }
     $("input").placeholder = d ? `Ask about ${d.name}${hasInvoices() ? ", or attach an invoice" : ""}…` : "Ask about your data…";
+    updateActions();
+  }
+  // The top-right buttons: add a file to an added tab that has room, export the open chat.
+  function updateActions() {
+    const d = activeDataset();
+    const add = $("add-files");
+    add.classList.toggle("hidden", !(d && d.deletable));
+    if (d && d.deletable) { add.textContent = `+ File (${d.files}/${d.max_files})`; add.disabled = !d.can_add_files || state.streaming; add.title = d.can_add_files ? "Add another file to this tab" : `This tab already has ${d.max_files} files`; }
+    $("export").classList.toggle("hidden", !state.current);
+    if (!state.current) closeExportMenu();
   }
   async function selectDataset(id) {
     if (state.streaming || id === state.datasetId) return;
@@ -226,48 +242,137 @@
     await loadDatasets();
   }
 
-  // ---------- add dataset dialog ----------
+  // ---------- add dataset dialog (a new tab, or more files for an added tab) ----------
   let addMode = "file";
+  let addTarget = null; // null = a new dataset; otherwise the dataset (tab) that gets more files
+  const slotsLeft = () => addTarget ? addTarget.max_files - addTarget.files : state.meta.max_files;
   function setAddMode(mode) {
     addMode = mode;
     $("mode-file").classList.toggle("active", mode === "file"); $("mode-link").classList.toggle("active", mode === "link");
     $("file-field").classList.toggle("hidden", mode !== "file"); $("link-field").classList.toggle("hidden", mode !== "link");
     $("add-error").textContent = "";
   }
-  function openAddDialog() {
-    $("add-form").reset(); setAddMode("file");
-    $("add-hint").textContent = `Up to ${state.meta.max_mb} MB and ${(state.meta.max_rows || 200000).toLocaleString()} rows. ${state.meta.max_added - state.meta.added} of ${state.meta.max_added} slots left. Google Sheets links work if the sheet is shared as "anyone with the link".`;
+  function describeAddDialog() {
+    const left = slotsLeft();
+    $("add-kicker").textContent = addTarget ? "ADD FILES" : "ADD A DATASET";
+    $("add-title").textContent = addTarget ? `Add to ${addTarget.name}` : "Bring your own data";
+    $("name-field").classList.toggle("hidden", !!addTarget);
+    const many = left > 1 ? `up to ${left}` : "1";
+    $("file-field").firstChild.textContent = `CSV or Excel ${left === 1 ? "file" : "files"} (${many})`;
+    $("link-field").firstChild.textContent = `${left === 1 ? "Link to a CSV or Excel file" : "Links to CSV or Excel files"} (${left > 1 ? "one per line, " : ""}${many})`;
+    $("add-submit").textContent = addTarget ? "Add" : "Add dataset";
+    const room = addTarget ? `This tab has ${addTarget.files} of ${addTarget.max_files} files, so ${left} more.` : `Up to ${left} related files become one tab; ${state.meta.max_added - state.meta.added} of ${state.meta.max_added} tabs left.`;
+    $("add-hint").textContent = `${room} Each file up to ${state.meta.max_mb} MB and ${(state.meta.max_rows || 200000).toLocaleString()} rows. Google Sheets links work if the sheet is shared as "anyone with the link". Each file is its own table; a question uses one table at a time.`;
+  }
+  function openAddDialog(target) {
+    addTarget = target || null;
+    $("add-form").reset(); setAddMode("file"); describeAddDialog();
     $("add-dataset").classList.remove("hidden");
   }
   const closeAddDialog = () => $("add-dataset").classList.add("hidden");
   $("mode-file").addEventListener("click", () => setAddMode("file"));
   $("mode-link").addEventListener("click", () => setAddMode("link"));
   $("add-cancel").addEventListener("click", closeAddDialog);
+  $("add-files").addEventListener("click", () => { const d = activeDataset(); if (d && d.can_add_files) openAddDialog(d); });
+
+  async function sendFile(file, target, name) {
+    const path = target ? `/api/datasets/${target.id}/upload?filename=${encodeURIComponent(file.name)}`
+      : `/api/datasets/upload?filename=${encodeURIComponent(file.name)}&name=${encodeURIComponent(name)}`;
+    const res = await fetch(path, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/octet-stream" }, body: file });
+    if (res.status === 401) { showLogin(); throw new Error("Please sign in."); }
+    if (!res.ok) { let d = res.statusText; try { d = (await res.json()).detail || d; } catch (_) {} throw new Error(d); }
+    return res.json();
+  }
+  const sendLink = (url, target, name) => api(target ? `/api/datasets/${target.id}/link` : "/api/datasets/link", { method: "POST", body: JSON.stringify({ url, name }) });
+
   $("add-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     $("add-error").textContent = "";
     const name = $("add-name").value.trim();
     const submit = $("add-submit"); submit.disabled = true; submit.textContent = "Loading…";
+    let target = addTarget, done = 0, label = "";
     try {
-      let created;
-      if (addMode === "file") {
-        const file = $("add-file").files[0];
-        if (!file) throw new Error("Choose a CSV or Excel file first.");
-        if (file.size > state.meta.max_mb * 1024 * 1024) throw new Error(`That file is larger than ${state.meta.max_mb} MB.`);
-        const res = await fetch(`/api/datasets/upload?filename=${encodeURIComponent(file.name)}&name=${encodeURIComponent(name)}`,
-          { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/octet-stream" }, body: file });
-        if (!res.ok) { let d = res.statusText; try { d = (await res.json()).detail || d; } catch (_) {} throw new Error(d); }
-        created = await res.json();
-      } else {
-        const url = $("add-url").value.trim();
-        if (!url) throw new Error("Paste a link first.");
-        created = await api("/api/datasets/link", { method: "POST", body: JSON.stringify({ url, name }) });
+      const items = addMode === "file" ? [...$("add-file").files] : $("add-url").value.split("\n").map((u) => u.trim()).filter(Boolean);
+      if (!items.length) throw new Error(addMode === "file" ? "Choose a CSV or Excel file first." : "Paste a link first.");
+      if (items.length > slotsLeft()) throw new Error(slotsLeft() > 0 ? `You can add ${slotsLeft()} more file${slotsLeft() === 1 ? "" : "s"} here, not ${items.length}.` : "This tab is full.");
+      for (const item of items) {
+        label = addMode === "file" ? item.name : item;
+        if (addMode === "file" && item.size > state.meta.max_mb * 1024 * 1024) throw new Error(`That file is larger than ${state.meta.max_mb} MB.`);
+        const result = addMode === "file" ? await sendFile(item, target, name) : await sendLink(item, target, name);
+        target = result; done += 1;   // the first file creates the tab; the next ones go into it
       }
       closeAddDialog();
-      state.datasetId = created.id; state.current = null; $("conv-title").textContent = "New chat";
+      state.datasetId = target.id; state.current = null; $("conv-title").textContent = "New chat";
       await loadDatasets();
-    } catch (err) { $("add-error").textContent = err.message; }
-    finally { submit.disabled = false; submit.textContent = "Add dataset"; }
+    } catch (err) {
+      $("add-error").textContent = (label ? `${label}: ` : "") + err.message + (done ? ` (${done} file${done === 1 ? "" : "s"} added before this.)` : "");
+      if (done) {   // some files are in: show the tab, and let the next try add to it
+        state.datasetId = target.id; state.current = null; await loadDatasets();
+        addTarget = activeDataset(); describeAddDialog();
+      }
+    }
+    finally { submit.disabled = false; if (!$("add-dataset").classList.contains("hidden")) describeAddDialog(); }
+  });
+
+  // ---------- rename a tab ----------
+  let renaming = null;
+  function openRenameDialog(d) {
+    renaming = d; $("rename-error").textContent = "";
+    $("rename-input").value = d.name;
+    $("rename-dataset").classList.remove("hidden");
+    $("rename-input").focus(); $("rename-input").select();
+  }
+  const closeRenameDialog = () => $("rename-dataset").classList.add("hidden");
+  $("rename-cancel").addEventListener("click", closeRenameDialog);
+  $("rename-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = $("rename-input").value.trim();
+    if (!name) { $("rename-error").textContent = "The name cannot be empty."; return; }
+    try {
+      await api(`/api/datasets/${renaming.id}`, { method: "PATCH", body: JSON.stringify({ name }) });
+      closeRenameDialog();
+      await loadDatasets();
+    } catch (err) { $("rename-error").textContent = err.message; }
+  });
+
+  // ---------- export / share the open chat ----------
+  const exportUrl = (fmt) => `/api/conversations/${state.current}/export?format=${fmt}`;
+  function closeExportMenu() { $("export-menu").classList.add("hidden"); $("export").setAttribute("aria-expanded", "false"); }
+  $("export").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = $("export-menu").classList.toggle("hidden") === false;
+    $("export").setAttribute("aria-expanded", String(open));
+    $("export-menu").querySelector('[data-act="share"]').classList.toggle("hidden", !navigator.share);
+  });
+  document.addEventListener("click", closeExportMenu);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeExportMenu(); closeAddDialog(); closeRenameDialog(); } });
+  async function chatText() {
+    const res = await fetch(exportUrl("md"), { credentials: "same-origin" });
+    if (!res.ok) throw new Error("Could not read this chat.");
+    return res.text();
+  }
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return; } catch (_) {}
+    const t = document.createElement("textarea"); t.value = text; document.body.appendChild(t); t.select();
+    const ok = document.execCommand("copy"); t.remove();
+    if (!ok) throw new Error("Copy is not available in this browser.");
+  }
+  function flash(text) { setStatus(text); setTimeout(() => setStatus(""), 2500); }
+  $("export-menu").addEventListener("click", async (e) => {
+    const act = e.target.closest("button") && e.target.closest("button").dataset.act;
+    if (!act || !state.current) return;
+    closeExportMenu();
+    try {
+      if (act === "md" || act === "html") {
+        const a = document.createElement("a"); a.href = exportUrl(act); a.download = ""; document.body.appendChild(a); a.click(); a.remove();
+        flash("Downloading…");
+      } else if (act === "copy") { await copyText(await chatText()); flash("Copied"); }
+      else if (act === "share") {
+        const text = await chatText();
+        const title = $("conv-title").textContent || "Data Copilot chat";
+        try { await navigator.share({ title, text }); } catch (err) { if (err && err.name !== "AbortError") { await copyText(text); flash("Sharing failed, copied instead"); } }
+      }
+    } catch (err) { alert(err.message); }
   });
 
   // ---------- invoices panel ----------
@@ -278,9 +383,8 @@
   $("toggle-invoices").addEventListener("click", async () => { $("invoices").classList.toggle("hidden"); if (!$("invoices").classList.contains("hidden")) await loadInvoices(); });
   $("close-invoices").addEventListener("click", () => $("invoices").classList.add("hidden"));
 
-  // ---------- theme ----------
-  const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
-  const currentTheme = () => document.documentElement.dataset.theme || (systemDark.matches ? "dark" : "light");
+  // ---------- theme (dark unless the person chose light) ----------
+  const currentTheme = () => document.documentElement.dataset.theme === "light" ? "light" : "dark";
   function showTheme() { $("toggle-theme").textContent = currentTheme() === "dark" ? "☀ Light" : "☾ Dark"; }
   $("toggle-theme").addEventListener("click", () => {
     const next = currentTheme() === "dark" ? "light" : "dark";
@@ -288,7 +392,6 @@
     try { localStorage.setItem("theme", next); } catch (_) {}
     showTheme();
   });
-  systemDark.addEventListener("change", showTheme);
   showTheme();
 
   // ---------- boot ----------

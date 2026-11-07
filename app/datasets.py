@@ -27,7 +27,7 @@ from sqlalchemy import Column, Date, DateTime, Float, Integer, MetaData, Table, 
 from sqlalchemy.orm import Session
 
 from .config import ROOT, settings
-from .db import Conversation, ConversationDataset, Dataset, DatasetTable, Message, Run, utcnow
+from .db import Conversation, ConversationDataset, Dataset, DatasetRename, DatasetTable, Message, Run, utcnow
 
 DATA_EXTENSIONS = {".csv", ".tsv", ".txt", ".xlsx", ".xlsm"}
 MAX_COLUMNS = 100
@@ -279,9 +279,11 @@ def _drop_physical(db: Session, physical_name: str) -> None:
 
 
 def _drop_leftovers(db: Session, dataset_id: int) -> None:
+    """After a failed load: drop the physical tables of this dataset that no committed DatasetTable row owns."""
     prefix = f"ds{dataset_id}_"
+    keep = set(db.scalars(select(DatasetTable.physical_name).where(DatasetTable.dataset_id == dataset_id)))
     for name in inspect(db.connection()).get_table_names():
-        if name.startswith(prefix):
+        if name.startswith(prefix) and name not in keep:
             _drop_physical(db, name)
     db.commit()
 
@@ -330,6 +332,7 @@ def delete_dataset(db: Session, dataset: Dataset) -> None:
         db.execute(delete(Conversation).where(Conversation.id.in_(conv_ids)))
     for dt in list(db.scalars(select(DatasetTable).where(DatasetTable.dataset_id == dataset.id))):
         _drop_dataset_table(db, dt)
+    db.execute(delete(DatasetRename).where(DatasetRename.dataset_id == dataset.id))
     db.delete(dataset)
     db.commit()
 
@@ -380,9 +383,10 @@ def scan_data_dir(data_dir: Path) -> list[FolderDataset]:
     return list(found.values())
 
 
-def _apply_config(ds: Dataset, fd: FolderDataset) -> None:
+def _apply_config(db: Session, ds: Dataset, fd: FolderDataset) -> None:
     cfg = fd.config
-    ds.name = str(cfg.get("title") or fd.slug.replace("_", " ").title())[:80]
+    renamed = db.get(DatasetRename, ds.id)  # a name someone chose beats the title in dataset.yaml
+    ds.name = renamed.name if renamed else str(cfg.get("title") or fd.slug.replace("_", " ").title())[:80]
     ds.description = str(cfg.get("description") or "")
     ds.notes = str(cfg.get("notes") or "")
     ds.features = ",".join(str(f) for f in (cfg.get("features") or []))[:200]
@@ -407,7 +411,7 @@ def sync_folder_datasets(db: Session, data_dir: Path | None = None) -> dict:
             ds = Dataset(slug=fd.slug, name=fd.slug, source="folder", origin=fd.origin)
             db.add(ds)
             db.flush()
-        _apply_config(ds, fd)
+        _apply_config(db, ds, fd)
         ds.origin = fd.origin
         current: dict[str, list[DatasetTable]] = {}
         for dt in ds.tables:
@@ -445,6 +449,26 @@ def uploaded_count(db: Session) -> int:
     return db.scalar(select(func.count()).select_from(Dataset).where(Dataset.source != "folder")) or 0
 
 
+def files_in(ds: Dataset) -> int:
+    """How many files the dataset was made from (a workbook with several sheets is one file)."""
+    return len({t.file_hash for t in ds.tables})
+
+
+def _load_file(db: Session, ds: Dataset, tables: list[RawTable], filename: str, file_hash: str) -> None:
+    """Load the tables of one file into `ds`, or leave nothing of this file behind."""
+    ds_id = ds.id
+    try:
+        for raw in tables:
+            load_table(db, ds, raw, source_file=filename, file_hash=file_hash)
+        db.commit()
+    except Exception:
+        db.rollback()
+        # SQLite does not roll back CREATE TABLE: remove whatever this failed load left behind.
+        _drop_leftovers(db, ds_id)
+        raise
+    db.expire(ds, ["tables"])
+
+
 def add_dataset(db: Session, *, name: str, filename: str, data: bytes, source: str, origin: str, user_id: int | None) -> Dataset:
     """Create a dataset from one uploaded/fetched file. Parses first, so a bad file leaves nothing behind."""
     if uploaded_count(db) >= settings.max_uploaded_datasets:
@@ -461,17 +485,43 @@ def add_dataset(db: Session, *, name: str, filename: str, data: bytes, source: s
                  description="", notes="", features="", starters="[]")
     db.add(ds)
     db.flush()
+    _load_file(db, ds, tables, filename, _hash(data))
+    return ds
+
+
+def check_can_add_file(ds: Dataset) -> None:
+    if ds.source == "folder":
+        raise DatasetError("Built-in datasets come from the data/ folder: put the file in that folder instead.")
+    if files_in(ds) >= settings.max_files_per_dataset:
+        raise DatasetError(f"This tab already has {settings.max_files_per_dataset} files, the maximum. Add the file as a new dataset instead.")
+
+
+def add_file(db: Session, ds: Dataset, *, filename: str, data: bytes) -> Dataset:
+    """Add one more file to an added dataset (a tab holds up to `max_files_per_dataset` files)."""
+    check_can_add_file(ds)
+    if len(data) > settings.max_dataset_mb * 1024 * 1024:
+        raise DatasetError(f"The file is larger than {settings.max_dataset_mb} MB.")
     h = _hash(data)
-    try:
-        for raw in tables:
-            load_table(db, ds, raw, source_file=filename, file_hash=h)
-        db.commit()
-    except Exception:
-        ds_id = ds.id
-        db.rollback()
-        # SQLite does not roll back CREATE TABLE: remove whatever this failed load left behind.
-        _drop_leftovers(db, ds_id)
-        raise
+    if h in {t.file_hash for t in ds.tables}:
+        raise DatasetError("That file is already in this tab.")
+    tables = read_tables(filename, data)
+    _load_file(db, ds, tables, filename, h)
+    return ds
+
+
+def rename_dataset(db: Session, ds: Dataset, name: str) -> Dataset:
+    """Give a tab a new name. For a built-in dataset the name is remembered so a restart keeps it."""
+    name = " ".join((name or "").split())[:80]
+    if not name:
+        raise DatasetError("The name cannot be empty.")
+    ds.name = name
+    if ds.source == "folder":
+        row = db.get(DatasetRename, ds.id)
+        if row is None:
+            db.add(DatasetRename(dataset_id=ds.id, name=name))
+        else:
+            row.name = name
+    db.commit()
     return ds
 
 
@@ -511,7 +561,8 @@ def table_by_name(db: Session, ds: Dataset, name: str | None) -> DatasetTable | 
 def dataset_summary(ds: Dataset) -> dict:
     return {
         "id": ds.id, "slug": ds.slug, "name": ds.name, "description": ds.description, "source": ds.source,
-        "deletable": ds.source != "folder", "features": sorted(features_of(ds)), "starters": json.loads(ds.starters or "[]"),
+        "deletable": ds.source != "folder", "files": files_in(ds), "max_files": settings.max_files_per_dataset,
+        "can_add_files": ds.source != "folder" and files_in(ds) < settings.max_files_per_dataset, "features": sorted(features_of(ds)), "starters": json.loads(ds.starters or "[]"),
         "tables": [{"name": t.name, "rows": t.row_count, "source_file": t.source_file,
                     "columns": [{"name": c["name"], "type": c["type"]} for c in json.loads(t.columns_json)]} for t in ds.tables],
     }
