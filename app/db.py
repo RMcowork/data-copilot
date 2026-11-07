@@ -120,24 +120,47 @@ class Invoice(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
-class Sale(Base):
-    """One line of the Lesson 4 bakery dataset (29,115 rows, Sep 2025 to Aug 2026)."""
+class Dataset(Base):
+    """One tab: a set of related tables the chat can query. Source: folder (data/), upload, or link."""
 
-    __tablename__ = "sales"
+    __tablename__ = "datasets"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    order_id: Mapped[str] = mapped_column(String(20), index=True)
-    order_datetime: Mapped[datetime] = mapped_column(DateTime)
-    order_date: Mapped[date] = mapped_column(Date, index=True)
-    branch: Mapped[str] = mapped_column(String(60), index=True)
-    channel: Mapped[str] = mapped_column(String(30))
-    payment_method: Mapped[str] = mapped_column(String(20))
-    customer_type: Mapped[str] = mapped_column(String(20))
-    product: Mapped[str] = mapped_column(String(60), index=True)
-    category: Mapped[str] = mapped_column(String(30))
-    quantity: Mapped[int] = mapped_column(Integer)
-    unit_price: Mapped[float] = mapped_column(Float)
-    line_total: Mapped[float] = mapped_column(Float)
-    status: Mapped[str] = mapped_column(String(12), index=True)  # completed | refunded
+    slug: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    description: Mapped[str] = mapped_column(Text, default="")
+    notes: Mapped[str] = mapped_column(Text, default="")  # extra instructions for the model, from dataset.yaml
+    features: Mapped[str] = mapped_column(String(200), default="")  # comma list, e.g. "invoices"
+    starters: Mapped[str] = mapped_column(Text, default="[]")  # JSON list of suggested first questions
+    source: Mapped[str] = mapped_column(String(10), default="folder")  # folder | upload | link
+    origin: Mapped[str] = mapped_column(String(500), default="")  # folder name or URL
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    tables: Mapped[list["DatasetTable"]] = relationship(order_by="DatasetTable.id")
+
+
+class DatasetTable(Base):
+    """One loaded file (or sheet): its real table is `physical_name`; `columns_json` is the typed schema."""
+
+    __tablename__ = "dataset_tables"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id"), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    physical_name: Mapped[str] = mapped_column(String(60), unique=True)
+    source_file: Mapped[str] = mapped_column(String(200), default="")
+    file_hash: Mapped[str] = mapped_column(String(64), default="")
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    columns_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ConversationDataset(Base):
+    """Which tab a conversation belongs to. No row = the default dataset (chats that predate datasets).
+
+    A separate table, not a column on conversations, so existing databases need no migration (architecture.md)."""
+
+    __tablename__ = "conversation_datasets"
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id"), primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id"), index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -169,19 +192,20 @@ def get_db():
 # ---------------------------------------------------------------------------
 
 def init_db(bind=None, data_dir: Path | None = None) -> dict:
-    """Create tables, record the schema version, seed reference data if empty."""
+    """Create tables, record the schema version, seed the suppliers list, load the data/ datasets."""
     bind = bind or engine
     data_dir = data_dir or (ROOT / "data")
     Base.metadata.create_all(bind)
-    report = {"schema_version": SCHEMA_VERSION, "suppliers_seeded": 0, "sales_seeded": 0}
+    report = {"schema_version": SCHEMA_VERSION, "suppliers_seeded": 0}
     with Session(bind) as db:
         if db.scalar(select(func.count()).select_from(SchemaVersion)) == 0:
             db.add(SchemaVersion(version=SCHEMA_VERSION))
             db.commit()
         if db.scalar(select(func.count()).select_from(Supplier)) == 0:
-            report["suppliers_seeded"] = _seed_suppliers(db, data_dir / "suppliers.csv")
-        if db.scalar(select(func.count()).select_from(Sale)) == 0:
-            report["sales_seeded"] = _seed_sales(db, data_dir / "bakery_sales.csv")
+            report["suppliers_seeded"] = _seed_suppliers(db, data_dir / "bakery" / "suppliers.csv")
+        from .datasets import sync_folder_datasets  # imported here: datasets.py imports the models above
+
+        report.update(sync_folder_datasets(db, data_dir))
     return report
 
 
@@ -196,30 +220,3 @@ def _seed_suppliers(db: Session, path: Path) -> int:
     db.add_all(rows)
     db.commit()
     return len(rows)
-
-
-def _seed_sales(db: Session, path: Path, chunk: int = 2000) -> int:
-    if not path.exists():
-        return 0
-    total = 0
-    batch: list[dict] = []
-    with path.open(encoding="utf-8") as f:
-        for r in csv.DictReader(f):
-            dt = datetime.strptime(r["order_datetime"], "%Y-%m-%d %H:%M")
-            # Clean at the door (Lesson 5): the source file has a "Herzliya " variant with a trailing space.
-            batch.append({
-                "order_id": r["order_id"].strip(), "order_datetime": dt, "order_date": dt.date(),
-                "branch": r["branch"].strip(), "channel": r["channel"].strip(), "payment_method": r["payment_method"].strip(),
-                "customer_type": r["customer_type"].strip(), "product": r["product"].strip(), "category": r["category"].strip(),
-                "quantity": int(r["quantity"]), "unit_price": float(r["unit_price"]),
-                "line_total": float(r["line_total"]), "status": r["status"],
-            })
-            if len(batch) >= chunk:
-                db.execute(Sale.__table__.insert(), batch)
-                total += len(batch)
-                batch = []
-    if batch:
-        db.execute(Sale.__table__.insert(), batch)
-        total += len(batch)
-    db.commit()
-    return total

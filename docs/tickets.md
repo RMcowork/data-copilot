@@ -1,4 +1,4 @@
-# Tickets — Bakery Copilot
+# Tickets — Data Copilot
 
 The spec broken into tickets a stranger could test, grouped by milestone. Each becomes a GitHub Issue on the project board (To do / In progress / Done). `scripts/create_issues.sh` creates them with `gh` once the repo exists.
 
@@ -17,7 +17,7 @@ Format: **title** · label · done when.
 
 ## Milestone v2 — tools
 
-9. **`sales_query` tool: metric, grouping, filters** · feature · totals match the dataset (₪647,065 · 14,421 orders · 40,194 items); unknown metric returns an error, not an exception.
+9. **`sales_query` tool: metric, grouping, filters** · feature · totals match the dataset (₪647,065 · 14,421 orders · 40,194 items); unknown metric returns an error, not an exception. (Replaced by `data_query` / `data_rows` in ticket 33.)
 10. **`lookup_supplier` tool** · feature · partial, case-insensitive match; unknown name returns `known_supplier: false`.
 11. **`log_invoice` tool with dedup, needs-a-look and flag rules** · feature · same `source_ref` twice is one row; null amount → `needs_a_look`; > ₪5,000 → `flagged`.
 12. **Tool loop in the agent (max 6 rounds), tool events to the UI** · feature · the UI shows a chip per tool call; the run row counts tool calls.
@@ -42,7 +42,8 @@ Format: **title** · label · done when.
 28. **Public repository** · chore · the history is one commit under GitHub's noreply address; no personal email, live URL or workspace name in any tracked file; Railway deploys from the new repo.
 30. **Assistant stops re-checking and retracting answers it already checked (issue #2)** · bug · eval cases can carry earlier turns (`history`); `no_recheck_after_off_topic` and `no_false_retraction` pass; `no_number_without_tool` still passes; `pytest -q` is green.
 31. **System prompt names the branches; the assistant stops inventing them (issue #3)** · bug · `build_system()` output contains the four branch names from the data; the eval `no_invented_branch` passes; `pytest -q` is green.
-32. **Deploy guide checks that work: seed report in the log, SSH key for the private database (issue #4)** · bug · startup prints `seed report: … sales_seeded: N` (tested); `docs/deploy-railway.md` gets from no SSH key to a row count with each command listed, and no longer says a local `railway run` can read the database.
+32. **Deploy guide checks that work: seed report in the log, SSH key for the private database (issue #4)** · bug · startup prints `seed report: … sales_seeded: N` (tested); `docs/deploy-railway.md` gets from no SSH key to a row count with each command listed, and no longer says a local `railway run` can read the database. (The seed report now reads `suppliers_seeded, folder_datasets, tables_loaded, tables_dropped, skipped`; ticket 33.)
+33. **Make the app work for any dataset** · feature · every folder under `data/` is a tab and the bakery files live in `data/bakery/`; a user can add up to 3 datasets by upload or link, each with its own tab and chats; the model reads the tab's schema and answers with `data_query` / `data_rows`; links to private addresses are refused; the app has a light/dark theme; spec §7 checks 13 to 18 pass, `pytest -q` is green (79) and `python -m evals.run` passes (13/13 on 2026-11-07).
 
 ## Later (not scheduled)
 

@@ -3,14 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Bakery Copilot</title>
+  <title>Data Copilot</title>
+  <script>try{var th=localStorage.getItem("theme");if(th==="dark"||th==="light")document.documentElement.dataset.theme=th}catch(e){}</script>
   <link rel="stylesheet" href="/static/styles.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js" defer></script>
 </head>
 <body>
   <div id="login" class="modal hidden" role="dialog" aria-labelledby="login-title">
     <form id="login-form" class="card">
-      <p class="kicker">BAKERY COPILOT</p>
+      <p class="kicker">DATA COPILOT</p>
       <h1 id="login-title">Sign in</h1>
       <label>Your name<input id="login-name" name="name" autocomplete="username" required minlength="2" maxlength="40" placeholder="Dana"></label>
       <label>Team password<input id="login-password" name="password" type="password" autocomplete="current-password" required></label>
@@ -19,16 +20,38 @@
     </form>
   </div>
 
+
+  <div id="add-dataset" class="modal hidden" role="dialog" aria-labelledby="add-title">
+    <form id="add-form" class="card">
+      <p class="kicker">ADD A DATASET</p>
+      <h1 id="add-title">Bring your own data</h1>
+      <div class="seg" role="tablist">
+        <button type="button" id="mode-file" class="seg-btn active" role="tab">Upload a file</button>
+        <button type="button" id="mode-link" class="seg-btn" role="tab">From a link</button>
+      </div>
+      <label id="file-field">CSV or Excel file<input id="add-file" type="file" accept=".csv,.tsv,.txt,.xlsx,.xlsm"></label>
+      <label id="link-field" class="hidden">Link to a CSV or Excel file<input id="add-url" type="url" placeholder="https://… or a Google Sheets link"></label>
+      <label>Name (optional)<input id="add-name" maxlength="80" placeholder="e.g. Customers 2026"></label>
+      <p id="add-hint" class="hint-text"></p>
+      <div class="row">
+        <button type="button" id="add-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="add-submit" class="primary">Add dataset</button>
+      </div>
+      <p id="add-error" class="error" role="alert"></p>
+    </form>
+  </div>
+
   <div id="app" class="app hidden">
     <aside class="sidebar">
       <div class="brand">
         <span class="dot"></span>
-        <div><strong>Bakery Copilot</strong><small id="who"></small></div>
+        <div><strong>Data Copilot</strong><small id="who"></small></div>
       </div>
       <button id="new-chat" class="primary wide">+ New chat</button>
       <nav id="conversations" class="conversations" aria-label="Conversations"></nav>
       <div class="sidebar-foot">
         <button id="toggle-invoices" class="ghost">Invoices</button>
+        <button id="toggle-theme" class="ghost" title="Switch between light and dark"></button>
         <button id="logout" class="ghost">Sign out</button>
       </div>
     </aside>
@@ -39,14 +62,16 @@
         <span id="status" class="status"></span>
       </header>
 
+      <nav id="tabs" class="tabs" aria-label="Datasets"></nav>
+
       <section id="messages" class="messages" aria-live="polite"></section>
 
       <form id="composer" class="composer">
-        <label class="attach" title="Attach an invoice photo">
+        <label id="attach" class="attach" title="Attach an invoice photo">
           <input id="image" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
           <span>📎</span>
         </label>
-        <textarea id="input" rows="1" placeholder="Ask about sales, or attach an invoice…" required></textarea>
+        <textarea id="input" rows="1" placeholder="Ask about your data…" required></textarea>
         <button id="send" type="submit" class="primary">Send</button>
       </form>
       <p id="attachment" class="attachment hidden"></p>

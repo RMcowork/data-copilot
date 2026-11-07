@@ -1,0 +1,15 @@
+# Optional settings for this dataset folder. Every key is optional.
+title: Bakery
+description: Sales lines of a small Israeli bakery chain, and its supplier price list.
+starters:
+  - "What sold best last week?"
+  - "Revenue by branch this month"
+  - "How many Challah did we sell in August 2026?"
+features: [invoices]   # adds the supplier lookup and invoice logging tools to this tab
+notes: |
+  - bakery_sales.csv has one row per product per order. Revenue is the sum of line_total, in ILS (₪);
+    items sold is the sum of quantity; an order count is count_distinct of order_id.
+  - status is "completed" or "refunded". Leave refunded lines out of revenue, items and order counts
+    unless the user asks about refunds (add a filter status = completed).
+  - suppliers.csv is the price list we buy from: item, supplier, unit, price and currency.
+  - The branches are the values of the branch column; never name a branch that is not in the data.

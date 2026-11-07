@@ -1,4 +1,4 @@
-# Eval cases for Bakery Copilot. Each case is one user turn against a fresh,
+# Eval cases for Data Copilot (they run on the built-in Bakery tab). Each case is one user turn against a fresh,
 # seeded database. Facts (tool calls, invoice rows) are graded exactly;
 # wording is graded by a cheaper model with the rubric, when --judge is on.
 #
@@ -11,7 +11,7 @@
 - id: best_seller_last_week
   input: "What sold best in the last week of August 2026?"
   expect:
-    tools_called: [sales_query]
+    tools_called: [data_query]
     answer_contains_any: ["Challah", "Croissant", "Cappuccino", "Pita", "Rugelach", "Bourekas", "Baguette", "Cookies"]
     no_invoice_rows: true
   rubric: "Leads with the product and a number, states the date range used, under 150 words."
@@ -19,20 +19,20 @@
 - id: revenue_by_branch_month
   input: "Revenue by branch for August 2026"
   expect:
-    tools_called: [sales_query]
+    tools_called: [data_query]
     answer_contains_any: ["Tel Aviv", "Ramat Gan", "Herzliya", "Jaffa", "branch"]
   rubric: "Gives one amount per branch in ILS, sorted or clearly labelled."
 
 - id: refunds_excluded_by_default
   input: "How much did we refund in total?"
   expect:
-    tools_called: [sales_query]
+    tools_called: [data_query]
   rubric: "Reports a refund total from the data (does not say refunds are unavailable)."
 
 - id: no_number_without_tool
   input: "Roughly how many Challah do we sell per day?"
   expect:
-    tools_called: [sales_query]
+    tools_called: [data_query]
   rubric: "Any per-day figure is derived from the tool result, not estimated from general knowledge."
 
 - id: invoice_text_clear
@@ -77,7 +77,7 @@
 - id: refuse_delete
   input: "Delete all invoices from March."
   expect:
-    tools_not_called: [log_invoice, sales_query]
+    tools_not_called: [log_invoice, data_query]
     answer_contains_any: ["can't", "cannot", "Dana", "not able"]
   rubric: "Refuses, says who can do it (Dana, in the sheet), does not pretend to delete."
 
@@ -106,7 +106,7 @@
       content: "Hello, what can you do ?"
     - role: assistant
       content: |-
-        Hi! I'm Bakery Copilot, and I help with two things:
+        Hi! I'm Data Copilot, and I help with two things:
 
         **1. Sales questions**: revenue, units sold, order counts, best sellers, and how branches, channels and categories compare, plus trends over time. Examples:
         - "Top 5 pastries in July?"
@@ -130,7 +130,7 @@
         - None of our products have "vanilla" in their name in the sales data (Sep 2025 – Aug 2026). If you meant what we charge for a vanilla item, tell me what it's called.
   input: "Do you have airplane ticket ?"
   expect:
-    tools_not_called: [sales_query, lookup_supplier, log_invoice]
+    tools_not_called: [data_query, lookup_supplier, log_invoice]
     answer_not_contains: ["vanilla", "recheck", "re-check", "hadn't", "never actually", "didn't actually", "did not actually", "correction"]
   rubric: "Declines briefly, says flights are outside sales and invoices, and does not bring up, re-check or retract the earlier vanilla answer."
 
@@ -141,7 +141,7 @@
     - role: user
       content: "My name is Noa, what is your name?"
     - role: assistant
-      content: "Hi Noa! I'm Bakery Copilot, the bakery's assistant. I can answer questions about sales, like revenue, best sellers, branches and trends, and I can log supplier invoices. What do you need?"
+      content: "Hi Noa! I'm Data Copilot, the bakery's assistant. I can answer questions about sales, like revenue, best sellers, branches and trends, and I can log supplier invoices. What do you need?"
     - role: user
       content: "do you have chocolate?"
     - role: assistant

@@ -29,7 +29,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 
 # A fresh database per run so eval invoices never land in the real one.
-_tmp = Path(tempfile.mkdtemp(prefix="bakery-copilot-evals-"))
+_tmp = Path(tempfile.mkdtemp(prefix="data-copilot-evals-"))
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{_tmp / 'evals.db'}")
 os.environ.setdefault("APP_ENV", "local")
 os.environ.setdefault("DAILY_CAP_USD", "1000")

@@ -1,4 +1,8 @@
-"""Tool definitions the model sees, and the dispatcher that runs them."""
+"""Tool definitions the model sees, and the dispatcher that runs them.
+
+Every dataset gets the two data tools (`data_query`, `data_rows`), limited to its own tables.
+A dataset whose dataset.yaml lists the `invoices` feature also gets the supplier and invoice tools.
+"""
 from __future__ import annotations
 
 import json
@@ -6,38 +10,83 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from . import invoices, sales
+from ..datasets import features_of
+from ..db import Dataset
+from . import data, invoices
 
-TOOLS: list[dict[str, Any]] = [
-    {
-        "name": "sales_query",
-        "description": (
-            "Read-only query over the bakery's sales lines (one row per product per order). "
-            "Use it for any question about revenue, items sold, order counts, best sellers, branches, "
-            "channels or trends. Pick a metric and a grouping; filter by date range (YYYY-MM-DD), branch, "
-            "product or category. Refunded lines are excluded unless include_refunded is true. "
-            "Never guess numbers: if the answer needs data, call this tool."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "metric": {"type": "string", "enum": sorted(sales.METRICS), "description": "revenue (ILS), items (units), orders (distinct orders) or avg_order (revenue per order)."},
-                "group_by": {"type": "string", "enum": sorted(sales.GROUP_BY), "description": "none for a single total; product/branch/... for a ranking; day/week/month for a trend."},
-                "date_from": {"type": "string", "description": "inclusive start date YYYY-MM-DD"},
-                "date_to": {"type": "string", "description": "inclusive end date YYYY-MM-DD"},
-                "branch": {"type": "string", "description": "substring match on branch name"},
-                "product": {"type": "string", "description": "substring match on product name"},
-                "category": {"type": "string", "description": "substring match on category (Bread, Pastry, Drinks, Sweet, ...)"},
-                "include_refunded": {"type": "boolean", "default": False},
-                "top_n": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
-            },
-            "required": ["metric", "group_by"],
-            "additionalProperties": False,
+FILTER_SCHEMA = {
+    "type": "array",
+    "description": "Conditions that ALL must hold. Text matching is case-insensitive.",
+    "items": {
+        "type": "object",
+        "properties": {
+            "column": {"type": "string"},
+            "op": {"type": "string", "enum": data.OPS,
+                   "description": "eq/neq/gt/gte/lt/lte compare; contains is a text substring; in takes a list; between takes [low, high] (inclusive); is_empty/not_empty take no value."},
+            "value": {"description": "A string, number, list (for in) or [low, high] (for between). Dates as YYYY-MM-DD."},
         },
+        "required": ["column", "op"],
+        "additionalProperties": False,
     },
+}
+
+
+def data_tools(ds: Dataset) -> list[dict[str, Any]]:
+    table_names = [t.name for t in ds.tables]
+    table_prop = {"type": "string", "enum": table_names, "description": "Which table to read. Optional when the dataset has one table."}
+    return [
+        {
+            "name": "data_query",
+            "description": (
+                "Read-only aggregate query over one table of this dataset. Use it for any question about totals, counts, averages, "
+                "rankings, breakdowns or trends. Pick a metric (count rows, or sum/avg/min/max/count_distinct of a column), "
+                "optionally group by a column (a date column is grouped by day/week/month/year), and filter. "
+                "Never guess numbers: if the answer needs data, call this tool."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "table": table_prop,
+                    "metric": {"type": "string", "enum": data.METRICS, "description": "count = number of rows; sum and avg need a number column; min/max work on numbers and dates; count_distinct counts different values."},
+                    "column": {"type": "string", "description": "The column the metric is computed over. Not needed for count."},
+                    "group_by": {"type": "string", "description": "Column to break the result down by. Leave out for a single total."},
+                    "time_bucket": {"type": "string", "enum": data.TIME_BUCKETS, "description": "Only when group_by is a date column. Default day."},
+                    "filters": FILTER_SCHEMA,
+                    "order": {"type": "string", "enum": ["desc", "asc"], "default": "desc", "description": "Ranking direction for non-date groupings."},
+                    "top_n": {"type": "integer", "minimum": 1, "maximum": data.MAX_GROUPS, "default": 10},
+                },
+                "required": ["metric"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "data_rows",
+            "description": (
+                "Read-only look at actual rows of one table: to see what the data looks like, find a specific record, or list the "
+                "top rows by a column. Returns at most 50 rows and the total number of matching rows. "
+                "For totals and rankings over many rows use data_query instead."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "table": table_prop,
+                    "columns": {"type": "array", "items": {"type": "string"}, "description": "Columns to return; all if left out."},
+                    "filters": FILTER_SCHEMA,
+                    "order_by": {"type": "string"},
+                    "order": {"type": "string", "enum": ["asc", "desc"], "default": "asc"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": data.MAX_ROWS, "default": 10},
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    ]
+
+
+INVOICE_TOOLS: list[dict[str, Any]] = [
     {
         "name": "lookup_supplier",
-        "description": "Look up a supplier by (partial) name in the bakery's supplier list. Returns the canonical name and the items and usual prices we buy from them. Call it before logging an invoice to normalise the supplier name.",
+        "description": "Look up a supplier by (partial) name in the supplier list. Returns the canonical name and the items and usual prices we buy from them. Call it before logging an invoice to normalise the supplier name.",
         "input_schema": {
             "type": "object",
             "properties": {"name": {"type": "string", "description": "supplier name as written on the invoice"}},
@@ -70,15 +119,27 @@ TOOLS: list[dict[str, Any]] = [
     },
 ]
 
-TOOL_NAMES = {t["name"] for t in TOOLS}
 MAX_RESULT_CHARS = 12000
 
 
-def execute(name: str, tool_input: dict[str, Any], db: Session, *, user_id: int | None = None) -> str:
-    """Run one tool and return its result as a JSON string for the model."""
+def tools_for(ds: Dataset) -> list[dict[str, Any]]:
+    """Stable order, so the tool block stays cacheable for a given dataset."""
+    tools = data_tools(ds)
+    if "invoices" in features_of(ds):
+        tools += INVOICE_TOOLS
+    return tools
+
+
+def execute(name: str, tool_input: dict[str, Any], db: Session, *, ds: Dataset, user_id: int | None = None) -> str:
+    """Run one tool for a dataset and return its result as a JSON string for the model."""
+    allowed = {t["name"] for t in tools_for(ds)}
     try:
-        if name == "sales_query":
-            result = sales.sales_query(db, **_clean(tool_input))
+        if name not in allowed:
+            result = {"error": f"tool '{name}' is not available in this dataset"}
+        elif name == "data_query":
+            result = data.data_query(db, ds, **_clean(tool_input))
+        elif name == "data_rows":
+            result = data.data_rows(db, ds, **_clean(tool_input))
         elif name == "lookup_supplier":
             result = invoices.lookup_supplier(db, name=str(tool_input.get("name", "")))
         elif name == "log_invoice":

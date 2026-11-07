@@ -120,11 +120,14 @@ def test_image_message_carries_a_reference(client, db, logged_in, fake):
 
 
 def test_system_prompt_names_the_real_branches(client, db):
-    # Issue #3: unnamed, the model made one up ("Haifa") for its examples.
-    text = agent_module.build_system(db)[0]["text"]
+    # Issue #3: unnamed, the model made one up ("Haifa") for its examples. Now the schema lists every value.
+    from app import datasets
+
+    text = agent_module.build_system(db, datasets.default_dataset(db))[0]["text"]
     for branch in ("Tel Aviv - Florentin", "Tel Aviv - Dizengoff", "Ramat Gan", "Herzliya"):
         assert branch in text
     assert "{{" not in text
+    assert "## Invoices" in text  # the bakery tab has the invoices feature
 
 
 def test_startup_prints_the_seed_report(client, capsys):
@@ -137,12 +140,12 @@ def test_startup_prints_the_seed_report(client, capsys):
     capsys.readouterr()
     with TestClient(app):
         pass
-    assert "seed report: schema_version: 1, suppliers_seeded: 0, sales_seeded: 0" in capsys.readouterr().out
+    assert "seed report: schema_version: 1, suppliers_seeded: 0, folder_datasets: 1, tables_loaded: 0" in capsys.readouterr().out
 
 
 def test_digest_endpoint_needs_secret(client, logged_in):
     assert client.post("/internal/digest").status_code == 401
     r = client.post("/internal/digest", headers={"X-Cron-Secret": "cron-test"})
     assert r.status_code == 200
-    assert r.json()["text"].startswith("Bakery Copilot —")
+    assert r.json()["text"].startswith("Data Copilot —")
     assert r.json()["sent"] is False

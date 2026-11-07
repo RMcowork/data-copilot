@@ -32,12 +32,12 @@ Written while everything works. Each entry is a sequence: click here, run this, 
 ## Database restore
 
 1. Railway → Postgres → **Backups** → pick the snapshot → restore into the **staging** environment's database.
-2. Point a staging deploy at it; open the app; check Invoices and a sales question.
+2. Point a staging deploy at it; open the app; check Invoices, a Bakery question and any dataset added in the UI.
 3. Promote: restore into production in the same way, during a quiet hour; redeploy the web service.
 
 ## Deploy is stuck or the health check never passes
 
-1. Logs → look for the seed report (`sales_seeded: 29115`). A first deploy seeds the sales table and can take a minute; the health check timeout is 120 s.
+1. Logs → look for the seed report (`tables_loaded: 2`, and `skipped: []`). A first deploy loads the data/ files and can take a minute; the health check timeout is 120 s. A file named under `skipped` could not be read: fix it and redeploy.
 2. If the database URL is wrong, `/health` returns 503 with `db:` in `problems`. Check the `DATABASE_URL` reference variable.
 3. Rollback to the previous deploy if users are waiting; fix in a PR.
 
@@ -45,3 +45,11 @@ Written while everything works. Each entry is a sequence: click here, run this, 
 
 - You (the implementer), then Dana (owner, decides on cost and data).
 - Railway status: `https://status.railway.com` · Anthropic status: `https://status.anthropic.com`.
+
+## A dataset someone added is wrong, stuck or in the way
+
+- **Wrong data**: delete its tab (the ✕) and add the file again. Datasets added in the UI are only in Postgres, so keep the original files elsewhere; a restore of the database brings them back.
+- **No free slot** (3 of 3 added): delete one tab. Built-in datasets (the `data/` folders) do not count and cannot be deleted in the UI.
+- **A `data/` file changed but the tab did not**: the tab reloads on the next deploy or restart, when the file's content differs from what was loaded. Check the seed report line.
+- **The database is filling up** (Railway's volume alert at 80%): `SELECT name, row_count FROM dataset_tables ORDER BY row_count DESC` shows which tables are big. Delete an added dataset you no longer need, or enlarge the Postgres volume.
+- **A link is refused**: only public http(s) links to a CSV or Excel file are accepted; a link that returns a web page (a sign-in, a sheet not shared as "anyone with the link") is refused. Upload the file instead.

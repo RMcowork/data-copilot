@@ -1,4 +1,4 @@
-# Deploying Bakery Copilot on Railway
+# Deploying Data Copilot on Railway
 
 How to put this app on Railway from nothing, where every secret goes, and the Railway CLI commands for the first deploy and for day two. `architecture.md` ("Hosting", "Secrets") records the decisions; `runbook.md` is for when it breaks; this file is the walkthrough. It describes the project as it runs on 2026-10-27, with Railway CLI 5.71.
 
@@ -30,7 +30,7 @@ Three places hold the configuration, and they do not overlap:
 
 Accounts:
 
-- A GitHub account that can administer the repo (`MaceTenth/bakery-copilot`).
+- A GitHub account that can administer the repo (`RMcowork/data-copilot`).
 - A Railway account. The Hobby plan covers the $4 to $6 a month this needs (README, "Cost").
 - An Anthropic Console account with an API key from https://platform.claude.com/settings/keys. The model bill is separate from Railway's.
 
@@ -91,12 +91,15 @@ Optional in the code (`app/config.py` has the same defaults), but set them anywa
 | Name | Production value | Meaning |
 |---|---|---|
 | `APP_ENV` | `production` | turns on the startup check for the three secrets and the `secure` flag on the cookie. Without it a missing `APP_PASSWORD` silently becomes `bakery` and a missing `APP_SECRET` becomes a new random value on every start, which signs everyone out at each deploy |
-| `MODEL` | `claude-opus-5-5` | the chat model. Change it only with an eval run before and after (practice.md) |
+| `MODEL` | `claude-opus-5-5` | the chat model. Change it only with an eval run before and after (practice.md). The 2026-11-07 evals (13/13) ran on `claude-sonnet-5-5`, the cheaper choice; deploy the model the evals passed on |
 | `MODEL_EFFORT` | `medium` | `low`, `medium` or `high` |
 | `HISTORY_LIMIT` | `20` | messages resent per turn |
 | `RATE_LIMIT_PER_HOUR` | `30` | per user |
 | `DAILY_CAP_USD` | `3.00` | hard stop for the whole app per local day; raise it only with Dana's agreement (runbook) |
 | `MAX_UPLOAD_MB` | `5` | invoice photo size |
+| `MAX_DATASET_MB` | `25` | largest file a user can upload or link as a dataset |
+| `MAX_DATASET_ROWS` | `200000` | most rows in one table of an uploaded or linked file |
+| `MAX_UPLOADED_DATASETS` | `3` | datasets users can add in the UI (the `data/` folders do not count) |
 | `TIMEZONE` | `Asia/Jerusalem` | the local day for the cap, and which day the digest calls "yesterday" |
 | `PYTHONUNBUFFERED` | `1` | so `print` reaches Railway's logs at once; the digest's six lines depend on it |
 | `MAX_TOKENS` | not set (2048) | model output cap |
@@ -152,7 +155,7 @@ Start from a clean clone of `main` with `pytest -q` green, signed in to Railway 
 ### Step 1: project and database
 
 ```bash
-railway init --name bakery-copilot
+railway init --name data-copilot
 railway add --database postgres
 ```
 
@@ -162,11 +165,11 @@ railway add --database postgres
 
 Open https://github.com/apps/railway-app/installations/new (the same page as Railway → Account Settings → Integrations → GitHub → Configure). Pick the account that owns the repo, choose **Only select repositories** → `bakery-copilot`, save.
 
-Do this before step 3. A service created while the app has no access keeps the repo as its source but gets no push trigger, and installing the app later does not add one: builds from GitHub fail with `Repository "MaceTenth/bakery-copilot" not found or is not accessible`, and a push to `main` deploys nothing, silently. If the services already exist, reconnect each one once the app has access; the command creates the trigger and starts a build of `main` at once:
+Do this before step 3. A service created while the app has no access keeps the repo as its source but gets no push trigger, and installing the app later does not add one: builds from GitHub fail with `Repository "RMcowork/data-copilot" not found or is not accessible`, and a push to `main` deploys nothing, silently. If the services already exist, reconnect each one once the app has access; the command creates the trigger and starts a build of `main` at once:
 
 ```bash
-railway service source connect --repo MaceTenth/bakery-copilot --branch main --service web
-railway service source connect --repo MaceTenth/bakery-copilot --branch main --service digest
+railway service source connect --repo RMcowork/data-copilot --branch main --service web
+railway service source connect --repo RMcowork/data-copilot --branch main --service digest
 ```
 
 Step 6 has the workaround for a repo the app cannot see at all (`railway up`).
@@ -174,8 +177,8 @@ Step 6 has the workaround for a repo the app cannot see at all (`railway up`).
 ### Step 3: the two services
 
 ```bash
-railway add --service web --repo MaceTenth/bakery-copilot --branch main
-railway add --service digest --repo MaceTenth/bakery-copilot --branch main
+railway add --service web --repo RMcowork/data-copilot --branch main
+railway add --service digest --repo RMcowork/data-copilot --branch main
 ```
 
 Each starts a build at once. That first deploy fails or boots in local mode (no variables yet); ignore it. The next deploy replaces it.
@@ -309,13 +312,13 @@ railway logs --service digest -d -n 20
 
 `cron run` enqueues the run and returns; it can take a few minutes to show in `cron list`. The log must end with the six digest lines and `[sent to webhook: True]` (or `False` when `DIGEST_WEBHOOK_URL` is not set).
 
-`web`'s first start seeds 29,115 sales rows and 10 suppliers, which can take up to a minute (the health timeout is 120 s). `railway logs --service web -d -n 50` shows it as one line, `seed report: schema_version: 1, suppliers_seeded: 10, sales_seeded: 29115`. Later deploys print `0` for both counts: the seed only fills empty tables.
+`web`'s first start loads the `data/` folders (the Bakery tab: 29,115 sales rows and 10 supplier rows) and seeds the 10 suppliers of the invoice tool, which can take up to a minute (the health timeout is 120 s). `railway logs --service web -d -n 50` shows it as one line, `seed report: schema_version: 1, suppliers_seeded: 10, folder_datasets: 1, tables_loaded: 2, tables_dropped: 0, skipped: []`. Later deploys print `0` for `suppliers_seeded` and `tables_loaded`: a file is reloaded only when its content changes. Datasets added through the UI live in Postgres and survive every deploy; they are not in this line.
 
-Last, if the evals should run in CI: `gh secret set ANTHROPIC_API_KEY --repo MaceTenth/bakery-copilot` asks for the value without echoing it. Without the secret the evals job prints "skipped" and only the tests gate the merge.
+Last, if the evals should run in CI: `gh secret set ANTHROPIC_API_KEY --repo RMcowork/data-copilot` asks for the value without echoing it. Without the secret the evals job prints "skipped" and only the tests gate the merge.
 
 ## 5. The same steps in the dashboard
 
-For whoever prefers clicking. Project → **+ New** → **Database** → PostgreSQL. **+ New** → **GitHub Repo** → `bakery-copilot` (this is where the app-access prompt from step 2 appears) → rename the service to `web`; the same again for `digest`. Service → **Variables** → **Raw Editor** → paste `NAME=value` lines, references included → **Deploy** the staged changes from the banner. Until you press it, nothing is applied, and `railway variable list` does not show the staged values. Service → **Settings** → **Networking** → **Generate Domain**.
+For whoever prefers clicking. Project → **+ New** → **Database** → PostgreSQL. **+ New** → **GitHub Repo** → `data-copilot` (this is where the app-access prompt from step 2 appears) → rename the service to `web`; the same again for `digest`. Service → **Variables** → **Raw Editor** → paste `NAME=value` lines, references included → **Deploy** the staged changes from the banner. Until you press it, nothing is applied, and `railway variable list` does not show the staged values. Service → **Settings** → **Networking** → **Generate Domain**.
 
 Do not set the start command, health check, cron schedule or restart policy by hand under Settings → Deploy: the file is the record, `railway config plan` reports hand edits as drift, and the next `railway config apply` undoes them. Change the file instead (section 6).
 
@@ -358,10 +361,10 @@ It registers the public key it finds in `~/.ssh` (on Windows, `.ssh` in your use
 Then `railway connect Postgres` opens `psql` through an SSH tunnel (`psql` must be installed locally; on Windows it comes with the PostgreSQL installer from postgresql.org). Without `psql`, run Python inside `web`, which reaches the database over Railway's private network and prints no password:
 
 ```bash
-railway ssh --service web -- python -c "from sqlalchemy import text; from app.db import engine; print(engine.connect().execute(text('select count(*) from sales')).scalar())"
+railway ssh --service web -- python -c "from sqlalchemy import text; from app.db import engine; print(engine.connect().execute(text('select name, row_count from dataset_tables')).all())"
 ```
 
-Expect `29115`. `railway ssh --service web -- python -m app.digest` prints the digest the same way. `railway run --service web -- <command>` is different: it runs the command on your machine with the service's variables, the real key included, so use it for one-off work and never `railway run env`. Its `DATABASE_URL` points at Railway's private network, which your machine cannot reach.
+Expect `bakery_sales` with `29115` rows and `suppliers` with `10`, plus one row per table of any dataset added in the UI. `railway ssh --service web -- python -m app.digest` prints the digest the same way. `railway run --service web -- <command>` is different: it runs the command on your machine with the service's variables, the real key included, so use it for one-off work and never `railway run env`. Its `DATABASE_URL` points at Railway's private network, which your machine cannot reach.
 
 **A staging environment.** `railway environment new staging --duplicate production` creates copies of the three services with the same variables. Give it its own `APP_PASSWORD`, then `railway config apply --environment staging`. runbook.md's database-restore entry assumes one exists.
 
@@ -372,7 +375,7 @@ Expect `29115`. `railway ssh --service web -- python -m app.digest` prints the d
 | Symptom | Cause | Fix |
 |---|---|---|
 | Build log: `Repository "…" not found or is not accessible` | Railway's GitHub app has no access to the private repo | section 4 step 2; meanwhile `railway up --service web --ci` from a clean `main` |
-| A push to `main` starts no build, although the app has access and the service shows the repo as its source | the service has no push trigger: it was created before the app had access, and the trigger is not added retroactively | `railway service source connect --repo MaceTenth/bakery-copilot --branch main --service web`, and the same for `digest` |
+| A push to `main` starts no build, although the app has access and the service shows the repo as its source | the service has no push trigger: it was created before the app had access, and the trigger is not added retroactively | `railway service source connect --repo RMcowork/data-copilot --branch main --service web`, and the same for `digest` |
 | Deploy log: `RuntimeError: Missing required variables in production: APP_PASSWORD, …` | `APP_ENV=production` is set on that service but the named variables are not | set them (on `digest`, as `${{web.NAME}}`), then redeploy |
 | `/health` is 503 with `"problems": ["ANTHROPIC_API_KEY missing"]` | the key is not set on `web`, or was pasted in the dashboard and never deployed | Variables → check → **Deploy**; or `railway redeploy --service web --yes` |
 | `/health` is 503 with `"problems": ["db: …"]` | `DATABASE_URL` is not the reference, or the database service is not named `Postgres` | set `DATABASE_URL=${{Postgres.DATABASE_URL}}` |
@@ -381,7 +384,7 @@ Expect `29115`. `railway ssh --service web -- python -m app.digest` prints the d
 | `railway config plan` keeps reporting `web deploy.restartPolicyType (null → "ON_FAILURE")` | `ON_FAILURE` is Railway's default; declaring it in the file produces a permanent false drift | leave it out; the file sets only `restartPolicyMaxRetries` |
 | Deploy log: `ModuleNotFoundError: No module named 'main'`, or "no start command" | the start command from `railway.ts` was never applied | `railway config apply --yes` |
 | The build uses Python 3.13 | `.python-version` is missing from the repo root | it must be there with `3.12`; Railpack reads it |
-| The first deploy's health check times out | seeding the sales table takes up to a minute | wait for the 120 s timeout; `railway logs --service web -d` shows `sales_seeded: 29115`; later deploys are fast |
+| The first deploy's health check times out | loading the data/ files takes up to a minute | wait for the 120 s timeout; `railway logs --service web -d` shows `tables_loaded: 2`; later deploys are fast |
 | The digest runs at the wrong hour | cron schedules are UTC | `30 4 * * *` is 07:30 IDT and 06:30 IST; change it in `railway.ts`, plan, apply |
 | `railway logs --service digest` shows nothing for a run | you are reading another deployment, or output was buffered | `railway cron list --service digest` for the run, then `railway logs <deployment-id> --service digest -d`; keep `PYTHONUNBUFFERED=1` |
 | `railway api` answers "Not Authorized" to GitHub queries | the CLI token cannot see the GitHub integration | use the dashboard for anything about repo access |
@@ -402,7 +405,7 @@ Most commands take `--service`, `--environment`, `--project`, `--json` and `--ye
 | Command | What it does |
 |---|---|
 | `railway login`, `railway logout`, `railway whoami` | sign in (browser; `--browserless` for a code), sign out, who am I |
-| `railway init --name bakery-copilot` | create a project and link this folder to it |
+| `railway init --name data-copilot` | create a project and link this folder to it |
 | `railway link` | link this folder to an existing project (`-p`, `-e`, `-s` to pick) |
 | `railway status` | the linked project, environment and service |
 | `railway list` | every project you can see |
@@ -432,7 +435,7 @@ Most commands take `--service`, `--environment`, `--project`, `--json` and `--ye
 
 ## 9. This deployment, as of 2026-10-27
 
-- Railway: project `bakery-copilot`, environment `production`, services `web`, `digest` and `Postgres`, region `iad`, with a generated `*.up.railway.app` domain. The address is not in this repo: find it in the dashboard (`web` → Settings → Networking) or with `railway domain list --service web`. `railway config plan` reports no drift.
+- Railway: project `data-copilot`, environment `production`, services `web`, `digest` and `Postgres`, region `iad`, with a generated `*.up.railway.app` domain. The address is not in this repo: find it in the dashboard (`web` → Settings → Networking) or with `railway domain list --service web`. `railway config plan` reports no drift.
 - Set and verified: every variable in section 3 on both services, except `DIGEST_WEBHOOK_URL`, so the digest prints to the log only. `/health` answers 200; a wrong password gets 401; an off-schedule digest run completed with exit 0.
 - Deploys from GitHub work: the app was installed on 2026-10-27, both services were reconnected with `railway service source connect` (section 4, step 2, since the first `railway add` had left no push trigger), and the head of `main` then built and deployed from GitHub on both services, with `/health` at 200 afterwards.
 - Not done yet: no `DIGEST_WEBHOOK_URL`, and no `ANTHROPIC_API_KEY` Actions secret, so CI skips the evals.
