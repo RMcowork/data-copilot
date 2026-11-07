@@ -71,6 +71,9 @@ class Settings:
     rate_limit_per_hour: int
     daily_cap_usd: float
     max_upload_mb: int
+    max_dataset_mb: int
+    max_dataset_rows: int
+    max_uploaded_datasets: int
     cron_secret: str | None
     digest_webhook_url: str | None
     timezone: str
@@ -120,6 +123,9 @@ def load_settings() -> Settings:
         rate_limit_per_hour=int(_env("RATE_LIMIT_PER_HOUR", "30")),
         daily_cap_usd=float(_env("DAILY_CAP_USD", "3.00")),
         max_upload_mb=int(_env("MAX_UPLOAD_MB", "5")),
+        max_dataset_mb=int(_env("MAX_DATASET_MB", "25")),
+        max_dataset_rows=int(_env("MAX_DATASET_ROWS", "200000")),
+        max_uploaded_datasets=int(_env("MAX_UPLOADED_DATASETS", "3")),
         cron_secret=_env("CRON_SECRET"),
         digest_webhook_url=_env("DIGEST_WEBHOOK_URL"),
         timezone=_env("TIMEZONE", "Asia/Jerusalem"),

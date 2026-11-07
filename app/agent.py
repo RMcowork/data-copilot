@@ -27,9 +27,9 @@ from sqlalchemy.orm import Session
 
 from .config import ROOT, settings
 from .costs import Usage, cost_usd
-from .db import Conversation, Message, Run, User, utcnow
+from . import datasets
+from .db import Conversation, ConversationDataset, Dataset, Message, Run, User, utcnow
 from .tools import registry
-from .tools.sales import branches, data_range
 
 try:  # the SDK is optional at import time so tests run without it configured
     import anthropic
@@ -38,9 +38,10 @@ except ImportError:  # pragma: no cover
 
 MAX_TOOL_ROUNDS = 6
 SYSTEM_PATH = ROOT / "app" / "prompts" / "system.md"
+FEATURE_PROMPTS = {"invoices": ROOT / "app" / "prompts" / "invoices.md"}
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-fable-5-1"}
-REFUSAL_TEXT = ("I can't help with that request. If it is about sales or invoices, try rephrasing it; "
-                "for anything else, ask Dana.")
+REFUSAL_TEXT = ("I can't help with that request. If it is about this dataset, try rephrasing it; "
+                "for anything else, ask the person who owns the data.")
 
 
 # ---------------------------------------------------------------------------
@@ -70,11 +71,13 @@ class FakeModelClient:
     def __init__(self, turns: list[list[ModelEvent]] | None = None):
         self.turns: list[list[ModelEvent]] = list(turns or [])
         self.last_messages: list[dict] = []
+        self.last_system: list[dict] = []
+        self.last_tools: list[dict] = []
         self.calls = 0
 
     def stream(self, *, system, messages, tools) -> Iterator[ModelEvent]:
         self.calls += 1
-        self.last_messages = messages
+        self.last_messages, self.last_system, self.last_tools = messages, system, tools
         if self.turns:
             yield from self.turns.pop(0)
             return
@@ -133,12 +136,15 @@ def get_model_client() -> ModelClient:
 # The turn
 # ---------------------------------------------------------------------------
 
-def build_system(db: Session) -> list[dict]:
-    d_from, d_to = data_range(db)
+def build_system(db: Session, ds: Dataset) -> list[dict]:
+    """The system prompt for one dataset: the schema, the owner's notes, and the prompts of its features."""
     today = datetime.now(ZoneInfo(settings.timezone)).date()
+    features = "".join("\n" + FEATURE_PROMPTS[f].read_text(encoding="utf-8") for f in sorted(datasets.features_of(ds)) if f in FEATURE_PROMPTS)
+    notes = f"\n### Notes about this dataset\n{ds.notes.strip()}\n" if (ds.notes or "").strip() else ""
     text = (SYSTEM_PATH.read_text(encoding="utf-8")
-            .replace("{{DATA_FROM}}", str(d_from or "unknown")).replace("{{DATA_TO}}", str(d_to or "unknown"))
-            .replace("{{BRANCHES}}", ", ".join(branches(db)) or "unknown")
+            .replace("{{DATASET_NAME}}", ds.name).replace("{{DESCRIPTION}}", ds.description or "")
+            .replace("{{SCHEMA}}", datasets.schema_text(ds) or "(this dataset has no tables)")
+            .replace("{{NOTES}}", notes).replace("{{FEATURES}}", features)
             .replace("{{TODAY}}", today.isoformat()))
     # One cached block: tools + system form the stable prefix every turn reuses.
     return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
@@ -181,9 +187,11 @@ def _summarise_result(result_text: str) -> str:
         return f"{'created' if r['created'] else r.get('reason', 'existing')} · {r['status']}" + (" · flagged" if r.get("flagged") else "")
     if "matches" in r:  # lookup_supplier
         return f"{len(r['matches'])} match" + ("" if len(r["matches"]) == 1 else "es")
-    if "row_count" in r:  # sales_query grouped
+    if "row_count" in r:  # data_query grouped
         return f"{r['row_count']} rows · {r['metric']} by {r['group_by']}"
-    if "value" in r:  # sales_query total
+    if "total_matching" in r:  # data_rows
+        return f"{r['returned']} of {r['total_matching']} rows"
+    if "value" in r:  # data_query total
         return f"{r['metric']} = {r['value']}"
     return result_text[:90]
 
@@ -202,17 +210,29 @@ def _friendly(exc: Exception) -> str:
 
 
 def run_turn(db: Session, *, user: User, conversation: Conversation | None, text: str, image: dict | None,
-             client: ModelClient) -> Iterator[dict]:
-    """Yield SSE-ready events for one user turn. See the module docstring for the contract."""
+             client: ModelClient, dataset: Dataset | None = None) -> Iterator[dict]:
+    """Yield SSE-ready events for one user turn. See the module docstring for the contract.
+
+    The turn works on one dataset: the conversation's own if it has one, else `dataset` (for a new
+    conversation), else the default."""
     started = time.monotonic()
     text = (text or "").strip()
     image_ref = f"img_{hashlib.sha256(image['data'].encode()).hexdigest()[:10]}" if image else None
 
     if conversation is None:
+        dataset = dataset or datasets.default_dataset(db)
         conversation = Conversation(user_id=user.id, title=(text or "Invoice photo")[:60])
         db.add(conversation)
         db.commit()
         db.refresh(conversation)
+        if dataset is not None:
+            db.add(ConversationDataset(conversation_id=conversation.id, dataset_id=dataset.id))
+            db.commit()
+    else:
+        dataset = datasets.dataset_for_conversation(db, conversation)
+    if dataset is None:
+        yield {"type": "error", "message": "No dataset is loaded yet. Add files under data/ or upload one."}
+        return
     yield {"type": "meta", "conversation_id": conversation.id, "title": conversation.title}
 
     # 1. The user's message is saved first: it counts for the rate limit even if the stream dies.
@@ -233,8 +253,8 @@ def run_turn(db: Session, *, user: User, conversation: Conversation | None, text
         prompt_text += f"\n\n(image reference: {image_ref})"
     content.append({"type": "text", "text": prompt_text})
     messages.append({"role": "user", "content": content})
-    system = build_system(db)
-    tools = registry.TOOLS
+    system = build_system(db, dataset)
+    tools = registry.tools_for(dataset)
 
     run = Run(conversation_id=conversation.id, user_id=user.id,
               model=settings.model if client.name == "anthropic" else client.name, status="ok")
@@ -285,7 +305,7 @@ def run_turn(db: Session, *, user: User, conversation: Conversation | None, text
                     tool_names.append(tu["name"])
                     tool_input = tu.get("input") or {}
                     yield {"type": "tool", "name": tu["name"], "status": "start", "summary": _summarise_input(tool_input)}
-                    result_text = registry.execute(tu["name"], tool_input, db, user_id=user.id)
+                    result_text = registry.execute(tu["name"], tool_input, db, ds=dataset, user_id=user.id)
                     yield {"type": "tool", "name": tu["name"], "status": "done", "summary": _summarise_result(result_text)}
                     results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": result_text})
                 messages.append({"role": "assistant", "content": blocks})

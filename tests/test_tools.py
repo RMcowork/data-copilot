@@ -1,8 +1,9 @@
 """Unit tests: the deterministic parts. Same input, same output, every time."""
 import pytest
 
+from app import datasets
+from app.tools.data import data_query, data_rows
 from app.tools.invoices import log_invoice, lookup_supplier, parse_amount
-from app.tools.sales import sales_query
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -46,29 +47,59 @@ def test_lookup_supplier_partial_match(client, db):
     assert lookup_supplier(db, name="nobody-here")["known_supplier"] is False
 
 
-def test_sales_query_totals_match_the_dataset(client, db):
+@pytest.fixture
+def bakery(db):
+    return datasets.default_dataset(db)
+
+
+COMPLETED = [{"column": "status", "op": "eq", "value": "completed"}]
+
+
+def test_data_query_totals_match_the_dataset(client, db, bakery):
     # The Lesson 4/5 dataset: completed revenue ₪647,065 · 40,194 items · 14,196 completed orders
     # (14,421 orders in total once refunded lines are included).
-    res = sales_query(db, metric="revenue", group_by="none")
-    assert round(res["revenue"]) == 647065
-    assert res["items"] == 40194
-    assert res["orders"] == 14196
-    everything = sales_query(db, metric="orders", group_by="none", include_refunded=True)
-    assert everything["orders"] == 14421
+    rev = data_query(db, bakery, table="bakery_sales", metric="sum", column="line_total", filters=COMPLETED)
+    assert round(rev["value"]) == 647065
+    items = data_query(db, bakery, table="bakery_sales", metric="sum", column="quantity", filters=COMPLETED)
+    assert items["value"] == 40194
+    orders = data_query(db, bakery, table="bakery_sales", metric="count_distinct", column="order_id", filters=COMPLETED)
+    assert orders["value"] == 14196
+    everything = data_query(db, bakery, table="bakery_sales", metric="count_distinct", column="order_id")
+    assert everything["value"] == 14421
 
 
-def test_branch_names_are_cleaned_at_the_door(client, db):
-    # The CSV has "Herzliya " with a trailing space; the seed strips it, so there are exactly four branches.
-    res = sales_query(db, metric="revenue", group_by="branch", include_refunded=True)
+def test_branch_names_are_cleaned_at_the_door(client, db, bakery):
+    # The CSV has "Herzliya " with a trailing space; the loader strips it, so there are exactly four branches.
+    res = data_query(db, bakery, table="bakery_sales", metric="count", group_by="branch")
     assert res["row_count"] == 4
     assert sorted(r["key"] for r in res["rows"]) == ["Herzliya", "Ramat Gan", "Tel Aviv - Dizengoff", "Tel Aviv - Florentin"]
 
 
-def test_sales_query_ranking_and_filters(client, db):
-    top = sales_query(db, metric="items", group_by="product", top_n=3)
+def test_data_query_ranking_trend_and_filters(client, db, bakery):
+    top = data_query(db, bakery, table="bakery_sales", metric="sum", column="quantity", group_by="product", top_n=3)
     assert top["row_count"] == 3
     assert top["rows"][0]["value"] >= top["rows"][1]["value"] >= top["rows"][2]["value"]
-    month = sales_query(db, metric="revenue", group_by="branch", date_from="2026-08-01", date_to="2026-08-31")
+    august = [{"column": "order_datetime", "op": "between", "value": ["2026-08-01", "2026-08-31"]}]
+    month = data_query(db, bakery, table="bakery_sales", metric="sum", column="line_total", group_by="branch", filters=august)
     assert 0 < month["row_count"] <= 4
-    assert sales_query(db, metric="nope", group_by="none")["error"].startswith("unknown metric")
-    assert sales_query(db, metric="revenue", group_by="none", date_from="31/08/2026")["error"] == "dates must be YYYY-MM-DD"
+    trend = data_query(db, bakery, table="bakery_sales", metric="sum", column="line_total", group_by="order_datetime",
+                       time_bucket="month", filters=august)
+    assert [r["key"] for r in trend["rows"]] == ["2026-08"]  # a date-only bound includes the whole last day
+    assert abs(trend["rows"][0]["value"] - sum(r["value"] for r in month["rows"])) < 0.01
+
+
+def test_data_query_rejects_bad_requests_with_a_hint(client, db, bakery):
+    assert data_query(db, bakery, table="bakery_sales", metric="nope")["error"].startswith("unknown metric")
+    assert "needs a number column" in data_query(db, bakery, table="bakery_sales", metric="sum", column="branch")["error"]
+    bad_col = data_query(db, bakery, table="bakery_sales", metric="count", group_by="color")
+    assert "unknown group_by column" in bad_col["error"] and "branch" in bad_col["tables"]["bakery_sales"]
+    assert "not a date" in data_query(db, bakery, table="bakery_sales", metric="count",
+                                      filters=[{"column": "order_datetime", "op": "gte", "value": "31/08/2026"}])["error"]
+    assert "unknown table" in data_query(db, bakery, table="payroll", metric="count")["error"]
+
+
+def test_data_rows_lists_rows_and_counts_matches(client, db, bakery):
+    res = data_rows(db, bakery, table="suppliers", filters=[{"column": "currency", "op": "eq", "value": "eur"}], limit=2)
+    assert res["returned"] == 2 and res["total_matching"] >= 2
+    assert set(res["rows"][0]) == {"item", "supplier", "unit", "price", "currency"}
+    assert data_rows(db, bakery, table="suppliers", limit=500)["returned"] == 10  # capped at the table size; never above 50

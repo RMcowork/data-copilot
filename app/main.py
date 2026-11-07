@@ -1,4 +1,4 @@
-"""Bakery Copilot backend: the API, the static UI, the health check, the digest hook.
+"""Data Copilot backend: the API, the static UI, the health check, the digest hook.
 
 One service does everything (architecture.md, "Where things run"). The agent
 loop itself lives in agent.py; this file is doors, locks and plumbing.
@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -17,10 +18,12 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from . import auth, limits
+from . import datasets as ds_lib
 from .agent import get_model_client, run_turn
 from .config import ROOT, settings
-from .db import Conversation, Message, SessionLocal, engine, get_db, init_db
+from .db import Conversation, ConversationDataset, Dataset, Message, SessionLocal, engine, get_db, init_db
 from .digest import build_digest, send_digest
+from .fetch import fetch_url
 from .tools.invoices import recent_invoices
 
 
@@ -33,7 +36,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Bakery Copilot", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
+app = FastAPI(title="Data Copilot", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 
 
@@ -51,8 +54,14 @@ class ImageIn(BaseModel):
     data: str  # base64, no data: prefix
 
 
+class LinkIn(BaseModel):
+    url: str = Field(min_length=8, max_length=2000)
+    name: str = Field(default="", max_length=80)
+
+
 class ChatIn(BaseModel):
     conversation_id: int | None = None
+    dataset_id: int | None = None  # for a new conversation: which tab it starts in
     message: str = Field(default="", max_length=4000)
     image: ImageIn | None = None
 
@@ -115,10 +124,18 @@ def me(request: Request, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/conversations")
-def list_conversations(request: Request, db: Session = Depends(get_db)):
+def list_conversations(request: Request, dataset_id: int | None = None, db: Session = Depends(get_db)):
     user = auth.current_user(request, db)
-    rows = db.scalars(select(Conversation).where(Conversation.user_id == user.id)
-                      .order_by(Conversation.updated_at.desc()).limit(100)).all()
+    q = select(Conversation).where(Conversation.user_id == user.id)
+    if dataset_id is not None:
+        linked = select(ConversationDataset.conversation_id).where(ConversationDataset.dataset_id == dataset_id)
+        any_link = select(ConversationDataset.conversation_id)
+        default = ds_lib.default_dataset(db)
+        if default is not None and default.id == dataset_id:  # chats without a link belong to the default tab
+            q = q.where(Conversation.id.in_(linked) | Conversation.id.not_in(any_link))
+        else:
+            q = q.where(Conversation.id.in_(linked))
+    rows = db.scalars(q.order_by(Conversation.updated_at.desc()).limit(100)).all()
     return [{"id": c.id, "title": c.title, "updated_at": c.updated_at.isoformat(timespec="seconds")} for c in rows]
 
 
@@ -138,7 +155,7 @@ def chat(payload: ChatIn, request: Request, db: Session = Depends(get_db)):
     """One turn. Checks the three limits, then streams the agent's events as SSE."""
     user = auth.current_user(request, db)
     if not payload.message.strip() and payload.image is None:
-        raise HTTPException(400, "Say something or attach an invoice.")
+        raise HTTPException(400, "Say something or attach a file.")
     limits.check_rate_limit(db, user.id)
     limits.check_daily_cap(db)
     limits.check_upload_size(payload.image.data if payload.image else None)
@@ -149,6 +166,13 @@ def chat(payload: ChatIn, request: Request, db: Session = Depends(get_db)):
         if conv is None or conv.user_id != user.id:
             raise HTTPException(404, "Conversation not found.")
     conv_id = conv.id if conv else None
+    chat_ds = ds_lib.dataset_for_conversation(db, conv) if conv else (
+        db.get(Dataset, payload.dataset_id) if payload.dataset_id is not None else ds_lib.default_dataset(db))
+    if chat_ds is None:
+        raise HTTPException(404, "Dataset not found.")
+    if payload.image is not None and "invoices" not in ds_lib.features_of(chat_ds):
+        raise HTTPException(400, f"The {chat_ds.name} tab does not take images.")
+    dataset_id = chat_ds.id
     user_id = user.id
     image = payload.image.model_dump() if payload.image else None
     client = request.app.state.model_client
@@ -158,11 +182,75 @@ def chat(payload: ChatIn, request: Request, db: Session = Depends(get_db)):
         with SessionLocal() as sdb:
             suser = sdb.get(type(user), user_id)
             sconv = sdb.get(Conversation, conv_id) if conv_id else None
-            for event in run_turn(sdb, user=suser, conversation=sconv, text=payload.message, image=image, client=client):
+            sds = sdb.get(Dataset, dataset_id)
+            for event in run_turn(sdb, user=suser, conversation=sconv, text=payload.message, image=image, client=client, dataset=sds):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
     return StreamingResponse(sse(), media_type="text/event-stream", headers=headers)
+
+
+# ---------------------------------------------------------------------------
+# Datasets (the tabs)
+# ---------------------------------------------------------------------------
+
+def _dataset_list(db: Session) -> dict:
+    items = [ds_lib.dataset_summary(d) for d in ds_lib.list_datasets(db)]
+    return {"datasets": items, "default_id": (ds_lib.default_dataset(db).id if items else None),
+            "added": ds_lib.uploaded_count(db), "max_added": settings.max_uploaded_datasets,
+            "max_mb": settings.max_dataset_mb, "max_rows": settings.max_dataset_rows}
+
+
+@app.get("/api/datasets")
+def list_datasets(request: Request, db: Session = Depends(get_db)):
+    auth.current_user(request, db)
+    return _dataset_list(db)
+
+
+@app.post("/api/datasets/upload", status_code=201)
+async def upload_dataset(request: Request, filename: str, name: str = "", db: Session = Depends(get_db)):
+    """The file is the raw request body (no multipart); `filename` says what kind it is."""
+    user = auth.current_user(request, db)
+    limit = settings.max_dataset_mb * 1024 * 1024
+    if int(request.headers.get("content-length") or 0) > limit:
+        raise HTTPException(413, f"The file is larger than {settings.max_dataset_mb} MB.")
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf += chunk
+        if len(buf) > limit:
+            raise HTTPException(413, f"The file is larger than {settings.max_dataset_mb} MB.")
+    try:
+        ds = await run_in_threadpool(ds_lib.add_dataset, db, name=name, filename=filename, data=bytes(buf),
+                                     source="upload", origin=filename, user_id=user.id)
+    except ds_lib.DatasetError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return ds_lib.dataset_summary(ds)
+
+
+@app.post("/api/datasets/link", status_code=201)
+def add_dataset_from_link(payload: LinkIn, request: Request, db: Session = Depends(get_db)):
+    user = auth.current_user(request, db)
+    try:
+        if ds_lib.uploaded_count(db) >= settings.max_uploaded_datasets:  # fail before downloading anything
+            raise ds_lib.DatasetError(f"You already have {settings.max_uploaded_datasets} added datasets, the maximum. Delete one to add another.")
+        filename, data = fetch_url(payload.url)
+        ds = ds_lib.add_dataset(db, name=payload.name, filename=filename, data=data, source="link",
+                                origin=payload.url.strip(), user_id=user.id)
+    except ds_lib.DatasetError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return ds_lib.dataset_summary(ds)
+
+
+@app.delete("/api/datasets/{dataset_id}", status_code=204)
+def remove_dataset(dataset_id: int, request: Request, db: Session = Depends(get_db)):
+    auth.current_user(request, db)
+    ds = db.get(Dataset, dataset_id)
+    if ds is None:
+        raise HTTPException(404, "Dataset not found.")
+    if ds.source == "folder":
+        raise HTTPException(400, "Built-in datasets come from the data/ folder and cannot be deleted here.")
+    ds_lib.delete_dataset(db, ds)
+    return Response(status_code=204)
 
 
 # ---------------------------------------------------------------------------

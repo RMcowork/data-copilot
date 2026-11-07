@@ -6,7 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
-_TMP = Path(tempfile.mkdtemp(prefix="bakery-copilot-tests-"))
+_TMP = Path(tempfile.mkdtemp(prefix="data-copilot-tests-"))
 os.environ.update({
     "MODEL_PROVIDER": "fake",
     "DATABASE_URL": f"sqlite:///{_TMP / 'test.db'}",

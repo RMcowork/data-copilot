@@ -42,7 +42,7 @@ def build_digest(db: Session, day: date | None = None) -> str:
                       .where(Run.created_at >= start, Run.created_at < end)).one()
     run_count, cost, not_ok = int(runs[0] or 0), float(runs[1] or 0.0), int(runs[2] or 0)
 
-    lines = [f"Bakery Copilot — {day.strftime('%A %d %b %Y')}",
+    lines = [f"Data Copilot — {day.strftime('%A %d %b %Y')}",
              f"Invoices logged: {len(logged)} · total ₪{total:,.0f}",
              f"Needs a look: {len(needs)}" + (" — " + "; ".join(f"{i.supplier} ({i.invoice_number or 'no number'})" for i in needs[:5]) if needs else ""),
              f"Flagged over ₪5,000: {len(flagged)}" + (" — " + "; ".join(f"{i.supplier} ₪{i.amount:,.0f}" for i in flagged[:5]) if flagged else ""),

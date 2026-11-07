@@ -16,7 +16,7 @@ Lesson 4's loop, grown up. Every ticket, by you or by Claude Code, goes through 
 ## Never
 
 - Edit `.env`, print a secret, or paste a key into chat, a file or a commit message. If a key reaches Git history: rotate it first, then clean history (runbook.md).
-- Modify `data/` or anything under the `sales` table. The dataset is read-only.
+- Modify the files under `data/` or write to any dataset table. Datasets are read-only; the one exception is a change the owner asked for in words (moving the bakery files to `data/bakery/` on 2026-11-07), and it is recorded in architecture.md. A dataset the team adds in the UI is changed only by deleting it and adding the file again.
 - Push to `main`. Merge through a PR only, with CI green.
 - Skip step 5. A red test is a stop, not a note.
 - Change the model, effort or system prompt without an eval run before and after.
