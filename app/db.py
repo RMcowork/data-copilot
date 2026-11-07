@@ -153,6 +153,16 @@ class DatasetTable(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class DatasetRename(Base):
+    """A name a person gave a tab. Folder datasets take their title from dataset.yaml on every start;
+    a row here stops that, so a rename survives a restart. A separate table for the same reason as
+    ConversationDataset: no migration on an existing database."""
+
+    __tablename__ = "dataset_renames"
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id"), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80))
+
+
 class ConversationDataset(Base):
     """Which tab a conversation belongs to. No row = the default dataset (chats that predate datasets).
 

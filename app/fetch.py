@@ -20,17 +20,24 @@ from .datasets import DATA_EXTENSIONS, DatasetError
 
 MAX_REDIRECTS = 3
 TIMEOUT = httpx.Timeout(20.0, connect=8.0)
-_SHEETS = re.compile(r"^https://docs\.google\.com/spreadsheets/d/([\w-]+)")
+# Matches /d/<id> (also behind /u/0/) and the published-to-web form /d/e/<key>.
+_SHEETS = re.compile(r"^https://docs\.google\.com/spreadsheets/(?:u/\d+/)?d/(e/)?([\w-]+)")
 
 
 def normalise_url(url: str) -> str:
-    """A Google Sheets link (edit, view or share) becomes the link of its CSV export."""
+    """A Google Sheets link (edit, view, share or published-to-web) becomes the link of its CSV export."""
     url = url.strip()
     m = _SHEETS.match(url)
-    if m and "/export" not in url:
-        gid = (parse_qs(urlparse(url).fragment).get("gid") or parse_qs(urlparse(url).query).get("gid") or ["0"])[0]
-        return f"https://docs.google.com/spreadsheets/d/{m.group(1)}/export?format=csv&gid={gid}"
-    return url
+    if not m or "/export" in url:
+        return url
+    parts = urlparse(url)
+    gid = (parse_qs(parts.fragment).get("gid") or parse_qs(parts.query).get("gid") or [None])[0]
+    if m.group(1):  # published to the web: /d/e/<key>/pubhtml or /pub; the key is not a normal sheet id
+        if parse_qs(parts.query).get("output") == ["csv"]:
+            return url  # already the CSV link Google gave out
+        tail = f"&gid={gid}" if gid else ""
+        return f"https://docs.google.com/spreadsheets/d/e/{m.group(2)}/pub?output=csv{tail}"
+    return f"https://docs.google.com/spreadsheets/d/{m.group(2)}/export?format=csv&gid={gid or 0}"
 
 
 def _is_public(ip: str) -> bool:
@@ -60,7 +67,7 @@ def _filename(url: str, content: bytes) -> str:
     if ext in DATA_EXTENSIONS:
         return name
     if "docs.google.com/spreadsheets" in url:
-        return "sheet.csv"
+        return "sheet.xlsx" if content[:2] == b"PK" else "sheet.csv"
     return (Path(name).stem or "data") + (".xlsx" if content[:2] == b"PK" else ".csv")
 
 
@@ -70,8 +77,11 @@ def fetch_url(url: str, *, client: httpx.Client | None = None, check=check_publi
     url = normalise_url(url)
     own = client is None
     client = client or httpx.Client(timeout=TIMEOUT, follow_redirects=False, trust_env=False)
+    xlsx_url = None  # set when the link is a Sheets CSV export; used if Google has no CSV for it
+    if re.search(r"^https://docs\.google\.com/spreadsheets/d/[\w-]+/export\?format=csv", url):
+        xlsx_url = re.sub(r"export\?format=csv(&gid=\d+)?", "export?format=xlsx", url)
     try:
-        for _ in range(MAX_REDIRECTS + 1):
+        for _ in range(2 * (MAX_REDIRECTS + 1)):
             check(url)
             with client.stream("GET", url, headers={"User-Agent": "DataCopilot/1.0"}) as resp:
                 if resp.is_redirect:
@@ -84,6 +94,15 @@ def fetch_url(url: str, *, client: httpx.Client | None = None, check=check_publi
                     raise DatasetError("The link needs a sign-in. Share it as 'anyone with the link', or upload the file instead.")
                 if resp.status_code == 404:
                     raise DatasetError("The link was not found (404).")
+                if resp.status_code == 400 and xlsx_url:
+                    # An Excel file opened in Google Sheets (link has rtpof=true) has no CSV export, only xlsx.
+                    # The 400 can come from the host Google redirected to, so this keys off the original link.
+                    url, xlsx_url = xlsx_url, None
+                    continue
+                if resp.status_code == 400 and "google" in url:
+                    raise DatasetError("Google did not accept this Sheets link (400). Copy the link from the sheet's Share button "
+                                       "(set to 'anyone with the link'), or use File > Share > Publish to web > CSV. "
+                                       "You can also download the sheet as CSV and upload it.")
                 if resp.status_code >= 400:
                     raise DatasetError(f"The link answered with an error ({resp.status_code}).")
                 declared = int(resp.headers.get("content-length") or 0)

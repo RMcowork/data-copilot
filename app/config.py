@@ -74,6 +74,7 @@ class Settings:
     max_dataset_mb: int
     max_dataset_rows: int
     max_uploaded_datasets: int
+    max_files_per_dataset: int
     cron_secret: str | None
     digest_webhook_url: str | None
     timezone: str
@@ -126,6 +127,7 @@ def load_settings() -> Settings:
         max_dataset_mb=int(_env("MAX_DATASET_MB", "25")),
         max_dataset_rows=int(_env("MAX_DATASET_ROWS", "200000")),
         max_uploaded_datasets=int(_env("MAX_UPLOADED_DATASETS", "3")),
+        max_files_per_dataset=int(_env("MAX_FILES_PER_DATASET", "3")),
         cron_secret=_env("CRON_SECRET"),
         digest_webhook_url=_env("DIGEST_WEBHOOK_URL"),
         timezone=_env("TIMEZONE", "Asia/Jerusalem"),

@@ -5,21 +5,21 @@ A chat app for one team to ask questions about its data. It ships with one built
 ## 1. Users
 
 - One team, ten people at most. For the built-in Bakery data that is Dana (owner) and three staff.
-- From phones in the shops and the office laptop. Hebrew and English. The screen is light or dark, following the device, with a switch in the sidebar.
+- From phones in the shops and the office laptop. Hebrew and English. The screen is dark by default, with a switch in the sidebar for light.
 - Access: one shared team password plus a typed name. Not a public app. Not multi-tenant.
 
 ## 2. Jobs
 
 1. **Answer a question about a dataset**: totals, counts, averages, rankings, breakdowns, trends, or a look at actual rows, over any CSV or Excel data. Every number comes from the data, never from memory. A tab answers only about its own dataset.
-2. **Add a dataset** (up to 3, shared by the team): upload a CSV or Excel file, or give a link to one. It gets its own tab with its own chats. Anyone can delete an added dataset to free a slot.
+2. **Add a dataset** (up to 3, shared by the team): upload 1 to 3 related CSV or Excel files, or give links to them. They become one tab with its own chats, and a file can be added to that tab later (3 files in all). Anyone can rename a tab, and delete an added dataset to free a slot.
 3. **Built-in datasets**: every folder under `data/` is a tab; the files in it are the tab's tables (related files stay together). A loose file in `data/` is a tab of its own. They load at start, reload when a file changes, and cannot be deleted in the UI. Today there is one: `data/bakery/` (sales and supplier prices).
 4. **Log an invoice** (Bakery tab only) from a photo or typed details: supplier, number, amount, date. One invoice becomes one row. An unreadable amount is never guessed.
-5. **Keep every conversation** so a user can come back to it, in the tab it was started in.
+5. **Keep every conversation** so a user can come back to it, in the tab it was started in, and **download or share one** as Markdown or a web page (printable to PDF), or copy it as text. Only the signed-in owner can export a chat; there are no public share links.
 6. **Send a morning digest**: yesterday's invoices (the Bakery tab's), what needs a look, and chat spend across all tabs.
 
 ## 3. Not in v1
 
-Multi-tenant. Public sign-up. Payments or bank actions. Editing or deleting invoices from the chat. Mobile app. Voice. Exporting reports. Anything that writes to a dataset from the chat (the data is read-only; a dataset is changed by replacing its file). Combining two tables in one answer (joins). Private or signed-in links, and Excel files older than .xlsx.
+Multi-tenant. Public sign-up. Payments or bank actions. Editing or deleting invoices from the chat. Mobile app. Voice. Exporting reports or charts (a chat can be downloaded, nothing else), and public share links. Anything that writes to a dataset from the chat (the data is read-only; a dataset is changed by replacing its file). Combining two tables in one answer (joins). Private or signed-in links, and Excel files older than .xlsx.
 
 ## 4. Speed, per job
 
@@ -42,9 +42,9 @@ Multi-tenant. Public sign-up. Payments or bank actions. Editing or deleting invo
 - Per app: $3.00 of model spend per local day; past that the chat says "back tomorrow".
 - Invoices over ₪5,000 are logged and flagged for Dana; nothing is paid or acted on.
 - History resent per turn: last 20 messages.
-- Added datasets: at most 3 at a time; 25 MB and 200,000 rows per file; 100 columns per table. Links must be public http(s) addresses (nothing internal), and are re-checked on every redirect.
+- Added datasets: at most 3 at a time, each made of up to 3 files; 25 MB and 200,000 rows per file; 100 columns per table. Links must be public http(s) addresses (nothing internal), and are re-checked on every redirect.
 
-## 7. Done — eighteen checks a stranger can run
+## 7. Done — twenty-one checks a stranger can run
 
 1. Open the URL, enter a name and the password, see an empty chat with the Bakery tab selected.
 2. Wrong password is refused.
@@ -63,4 +63,7 @@ Multi-tenant. Public sign-up. Payments or bank actions. Editing or deleting invo
 15. **Tabs are separate**: a question in the new tab about bakery products is answered from the new data only; the Bakery tab's chats are not listed in the new tab; the new tab has no invoice paperclip.
 16. **A link works**: a public CSV link (or a Google Sheets link shared as "anyone with the link") becomes a tab. A link to `http://localhost:…`, a private address, or a web page is refused with a message.
 17. **A folder is a tab**: drop `data/<name>/a.csv` and `b.csv`, restart: one tab `<name>` appears with both tables. Edit `a.csv` and restart: it reloads. Remove the folder: the tab is gone.
-18. **Light and dark**: the sidebar switch changes the whole screen between light and dark, and the choice is still there after a reload.
+18. **Dark by default**: a first visit opens in dark. The sidebar switch changes the whole screen to light and back, and the choice is still there after a reload.
+19. **Several files in one tab**: under "+ Add dataset" choose two files at once: one tab appears with both as tables. "+ File (2/3)" adds a third; a fourth is refused with a clear message. The tab still counts as one of the 3.
+20. **Rename**: the ✎ on a tab (or a double-click) changes its name; the name is still there after a reload, also for a built-in tab after a restart.
+21. **Download a chat**: Export → Markdown or web page downloads a file with every message; a reply containing `<script>` shows as text in the page; another user's chat answers 404.
