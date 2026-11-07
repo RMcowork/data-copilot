@@ -11,5 +11,5 @@ Where each number comes from:
 - **Errors**: `SELECT count(*) FROM runs WHERE status <> 'ok' AND created_at > now() - interval '7 days'` (Railway → Postgres → Data), or the digest's "Runs not OK" line summed over the week.
 - **Model spend**: platform.claude.com → Usage, or `SELECT sum(cost_usd) FROM runs` for the week.
 - **First token**: Railway logs (`/api/chat` request durations) or a stopwatch on three real questions.
-- **DB size**: Railway → Postgres → Metrics.
+- **DB size**: Railway → Postgres → Metrics. Added datasets live here: if it climbs, `SELECT name, row_count FROM dataset_tables ORDER BY row_count DESC` shows which table is big (volume: 500 MB).
 - **Eval pass rate**: last row of `evals/history.csv` after a weekly `python -m evals.run`.

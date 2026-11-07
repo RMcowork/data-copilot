@@ -91,12 +91,15 @@ Optional in the code (`app/config.py` has the same defaults), but set them anywa
 | Name | Production value | Meaning |
 |---|---|---|
 | `APP_ENV` | `production` | turns on the startup check for the three secrets and the `secure` flag on the cookie. Without it a missing `APP_PASSWORD` silently becomes `bakery` and a missing `APP_SECRET` becomes a new random value on every start, which signs everyone out at each deploy |
-| `MODEL` | `claude-opus-5-5` | the chat model. Change it only with an eval run before and after (practice.md) |
+| `MODEL` | `claude-opus-5-5` | the chat model. Change it only with an eval run before and after (practice.md). The 2026-11-07 evals (13/13) ran on `claude-sonnet-5-5`, the cheaper choice; deploy the model the evals passed on |
 | `MODEL_EFFORT` | `medium` | `low`, `medium` or `high` |
 | `HISTORY_LIMIT` | `20` | messages resent per turn |
 | `RATE_LIMIT_PER_HOUR` | `30` | per user |
 | `DAILY_CAP_USD` | `3.00` | hard stop for the whole app per local day; raise it only with Dana's agreement (runbook) |
 | `MAX_UPLOAD_MB` | `5` | invoice photo size |
+| `MAX_DATASET_MB` | `25` | largest file a user can upload or link as a dataset |
+| `MAX_DATASET_ROWS` | `200000` | most rows in one table of an uploaded or linked file |
+| `MAX_UPLOADED_DATASETS` | `3` | datasets users can add in the UI (the `data/` folders do not count) |
 | `TIMEZONE` | `Asia/Jerusalem` | the local day for the cap, and which day the digest calls "yesterday" |
 | `PYTHONUNBUFFERED` | `1` | so `print` reaches Railway's logs at once; the digest's six lines depend on it |
 | `MAX_TOKENS` | not set (2048) | model output cap |

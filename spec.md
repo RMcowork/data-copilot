@@ -4,8 +4,8 @@ A chat app for one team to ask questions about its data. It ships with one built
 
 ## 1. Users
 
-- Dana (owner) and three staff. Ten people at most.
-- From phones in the shops and the office laptop. Hebrew and English.
+- One team, ten people at most. For the built-in Bakery data that is Dana (owner) and three staff.
+- From phones in the shops and the office laptop. Hebrew and English. The screen is light or dark, following the device, with a switch in the sidebar.
 - Access: one shared team password plus a typed name. Not a public app. Not multi-tenant.
 
 ## 2. Jobs
@@ -15,7 +15,7 @@ A chat app for one team to ask questions about its data. It ships with one built
 3. **Built-in datasets**: every folder under `data/` is a tab; the files in it are the tab's tables (related files stay together). A loose file in `data/` is a tab of its own. They load at start, reload when a file changes, and cannot be deleted in the UI. Today there is one: `data/bakery/` (sales and supplier prices).
 4. **Log an invoice** (Bakery tab only) from a photo or typed details: supplier, number, amount, date. One invoice becomes one row. An unreadable amount is never guessed.
 5. **Keep every conversation** so a user can come back to it, in the tab it was started in.
-6. **Send a morning digest**: yesterday's invoices, what needs a look, chat spend.
+6. **Send a morning digest**: yesterday's invoices (the Bakery tab's), what needs a look, and chat spend across all tabs.
 
 ## 3. Not in v1
 
@@ -33,7 +33,7 @@ Multi-tenant. Public sign-up. Payments or bank actions. Editing or deleting invo
 ## 5. Data
 
 - **Kept**: users (name only), conversations (each linked to a tab), messages (text; images are not stored), invoices, one run record per model turn (tokens, cost, tools, status), and the datasets: each loaded file as a typed table plus its schema (the bakery's 29,115 sales lines and 10 supplier rows are built in; uploaded and linked files are kept as tables, the original file is not).
-- **Retention**: conversations 90 days (manual purge in v1). Runs kept for the digest and the bill.
+- **Retention**: conversations 90 days (manual purge in v1). Runs kept for the digest and the bill. Deleting an added dataset deletes its table and the chats that were about it.
 - **Sensitive**: supplier names and amounts are business data; the team password and the API key are secrets and live only in Variables. The repository is public: only data that may be public goes under `data/`; private data is added through the UI, which stores it in the database and never in Git.
 
 ## 6. Limits
@@ -44,9 +44,9 @@ Multi-tenant. Public sign-up. Payments or bank actions. Editing or deleting invo
 - History resent per turn: last 20 messages.
 - Added datasets: at most 3 at a time; 25 MB and 200,000 rows per file; 100 columns per table. Links must be public http(s) addresses (nothing internal), and are re-checked on every redirect.
 
-## 7. Done — seventeen checks a stranger can run
+## 7. Done — eighteen checks a stranger can run
 
-1. Open the URL, enter a name and the password, see an empty chat.
+1. Open the URL, enter a name and the password, see an empty chat with the Bakery tab selected.
 2. Wrong password is refused.
 3. On the Bakery tab, "What sold best in the last week of August 2026?" streams an answer that names a product and the dates used, after a visible `data_query` call.
 4. "Revenue by branch for August 2026" gives one number per branch.
@@ -63,3 +63,4 @@ Multi-tenant. Public sign-up. Payments or bank actions. Editing or deleting invo
 15. **Tabs are separate**: a question in the new tab about bakery products is answered from the new data only; the Bakery tab's chats are not listed in the new tab; the new tab has no invoice paperclip.
 16. **A link works**: a public CSV link (or a Google Sheets link shared as "anyone with the link") becomes a tab. A link to `http://localhost:…`, a private address, or a web page is refused with a message.
 17. **A folder is a tab**: drop `data/<name>/a.csv` and `b.csv`, restart: one tab `<name>` appears with both tables. Edit `a.csv` and restart: it reloads. Remove the folder: the tab is gone.
+18. **Light and dark**: the sidebar switch changes the whole screen between light and dark, and the choice is still there after a reload.

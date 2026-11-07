@@ -51,4 +51,5 @@ Written while everything works. Each entry is a sequence: click here, run this, 
 - **Wrong data**: delete its tab (the ✕) and add the file again. Datasets added in the UI are only in Postgres, so keep the original files elsewhere; a restore of the database brings them back.
 - **No free slot** (3 of 3 added): delete one tab. Built-in datasets (the `data/` folders) do not count and cannot be deleted in the UI.
 - **A `data/` file changed but the tab did not**: the tab reloads on the next deploy or restart, when the file's content differs from what was loaded. Check the seed report line.
+- **The database is filling up** (Railway's volume alert at 80%): `SELECT name, row_count FROM dataset_tables ORDER BY row_count DESC` shows which tables are big. Delete an added dataset you no longer need, or enlarge the Postgres volume.
 - **A link is refused**: only public http(s) links to a CSV or Excel file are accepted; a link that returns a web page (a sign-in, a sheet not shared as "anyone with the link") is refused. Upload the file instead.
